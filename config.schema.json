@@ -21,6 +21,7 @@
         }
       },
       "connection": { "title": "Connection to Apple Home", "type": "string", "default": "auto", "oneOf": [ { "title": "Automatic (Matter if this bridge has Matter switched on, otherwise HomeKit)", "enum": ["auto"] }, { "title": "Matter", "enum": ["matter"] }, { "title": "HomeKit", "enum": ["homekit"] } ], "description": "Devices are published over one connection only, so nothing shows twice. Changing this moves them across. Restart the child bridge after changing it." },
+      "matterSpeedSteps": { "title": "Experimental (Matter only): tell Apple Home each fan's real number of speeds", "type": "boolean", "default": true, "description": "May make the speed slider move in steps. Turn this off if the speed slider stops working. Restart the child bridge after changing it." },
       "correctStateSwitch": { "title": "Add a Correct State switch to each device", "type": "boolean", "default": false, "description": "While the switch is on (30 seconds), changes in Apple Home fix what the tile shows and send nothing to the device." },
       "dimmerSwitch": { "title": "Add a Dimmer switch for lights that only dim by holding the button", "type": "boolean", "default": true },
       "breezeSwitch": { "title": "Add a Breeze switch to fans that have a breeze (natural wind) mode", "type": "boolean", "default": true },

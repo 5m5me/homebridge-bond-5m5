@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { API, PlatformAccessory } from 'homebridge';
-import { MatterAccessoryLike, MatterApiLike, fanModeFor, levelFromPercent, percentFromLevel } from '../src/matterPublisher';
+import { MatterAccessoryLike, MatterApiLike, fanModeFor, levelFromPercent, multiSpeedFan, percentFromLevel } from '../src/matterPublisher';
 import { Bond5m5Platform, chooseConnection } from '../src/platform';
 import { FakeBridge, devantiFan, fullFan, toggleFan } from './fakeBridge';
 
@@ -288,6 +288,9 @@ class FakeMatter implements MatterApiLike {
       }
     }
   }
+  async getAccessoryState(uuid: string, cluster: string): Promise<Record<string, unknown> | undefined> {
+    return this.state.get(`${uuid}|${cluster}`);
+  }
   names(): string[] {
     return [...this.accessories.values()].map(a => a.displayName);
   }
@@ -465,6 +468,58 @@ test('Matter: turning the timer switches off in the settings removes those tiles
   });
   try {
     assert.deepEqual(fake.names(), ['Office Fan', 'Office Fan Reverse', 'Office Fan Breeze']);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('Matter speed steps: the fan declares six speeds, shows the speed number, and a speed set by number reaches the fan', async () => {
+  const fake = new FakeMatter();
+  // A fan type that can be composed with features, like the real Matter library's.
+  const stepped = { name: 'FanWithMultiSpeed' };
+  (fake.deviceTypes as Record<string, unknown>).Fan = { with: () => stepped, behaviors: { fanControl: { with: (f: string) => `fanControl+${f}` } } };
+  const r = await rig({}, b => { b.devices = { fan3: devantiFan() }; }, withMatter(fake));
+  try {
+    const a = fake.byName('Office Fan');
+    assert.equal(a.deviceType, stepped);
+    assert.deepEqual(fake.get('Office Fan', 'fanControl'),
+      { fanMode: 0, percentSetting: 0, percentCurrent: 0, speedSetting: 0, speedCurrent: 0, fanModeSequence: 0, speedMax: 6 });
+    // By percentage, as before.
+    await fake.write('Office Fan', { percentSetting: 50 });
+    await wait(600);
+    assert.deepEqual(r.bridge.log, ['SetSpeed 3']);
+    assert.equal(fake.get('Office Fan', 'fanControl').speedSetting, 3);
+    // By speed number, which Homebridge does not report to the plugin. The plugin notices by checking.
+    await fake.write('Office Fan', { speedSetting: 5 });
+    await wait(1900);
+    assert.deepEqual(r.bridge.log, ['SetSpeed 3', 'SetSpeed 5']);
+    assert.equal(fake.get('Office Fan', 'fanControl').percentSetting, 83);
+    await fake.write('Office Fan', { speedSetting: 0 });
+    await wait(1900);
+    assert.equal(r.bridge.log.at(-1), 'TurnOff');
+    const count = r.bridge.log.length;
+    // A change from the Bond side is shown and never sent back.
+    r.bridge.devices.fan3.state.power = 1;
+    r.bridge.devices.fan3.state.speed = 2;
+    r.bridge.pushState('fan3');
+    await wait(2200);
+    assert.equal(fake.get('Office Fan', 'fanControl').speedSetting, 2);
+    assert.equal(r.bridge.log.length, count);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('Matter speed steps can be switched off, and are skipped when Homebridge cannot compose them', async () => {
+  assert.equal(multiSpeedFan('Fan'), undefined);
+  assert.equal(multiSpeedFan({ with: () => { throw new Error('no'); }, behaviors: { fanControl: { with: () => 1 } } }), undefined);
+  const fake = new FakeMatter();
+  const plain = { with: () => ({ name: 'stepped' }), behaviors: { fanControl: { with: () => 1 } } };
+  (fake.deviceTypes as Record<string, unknown>).Fan = plain;
+  const r = await rig({ matterSpeedSteps: false }, b => { b.devices = { fan3: devantiFan() }; }, withMatter(fake));
+  try {
+    assert.equal(fake.byName('Office Fan').deviceType, plain);
+    assert.equal('speedMax' in fake.get('Office Fan', 'fanControl'), false);
   } finally {
     await r.stop();
   }

@@ -25,6 +25,7 @@ export interface MatterApiLike {
   registerPlatformAccessories(plugin: string, platform: string, accessories: MatterAccessoryLike[]): Promise<void>;
   unregisterPlatformAccessories(plugin: string, platform: string, accessories: MatterAccessoryLike[]): Promise<void>;
   updateAccessoryState(uuid: string, cluster: string, attributes: Attributes): Promise<void>;
+  getAccessoryState?(uuid: string, cluster: string): Promise<Attributes | undefined>;
 }
 
 /** Matter fan modes. The fan cluster has no on/off command, only this mode and a percentage. */
@@ -43,8 +44,30 @@ interface Shown {
   attributes: Attributes;
 }
 
+/**
+ * A fan device type that declares a fixed number of speeds (Matter's MultiSpeed feature).
+ * Returns nothing if this Homebridge cannot compose it, and the plain fan is used instead.
+ */
+export function multiSpeedFan(fan: unknown): unknown {
+  try {
+    const type = fan as { with?: (b: unknown) => unknown; behaviors?: { fanControl?: { with?: (f: string) => unknown } } };
+    const control = type?.behaviors?.fanControl;
+    if (typeof type?.with === 'function' && typeof control?.with === 'function') {
+      return type.with(control.with('MultiSpeed'));
+    }
+  } catch {
+    // Fall through to the plain fan.
+  }
+  return undefined;
+}
+
+/** The speed number Matter shows: 0 when off. */
+export function fanSpeedNumber(core: DeviceCore): number {
+  return core.fanOn() ? Math.max(1, Math.min(core.features.maxSpeed, core.speed() || core.features.maxSpeed)) : 0;
+}
+
 /** What each Matter endpoint of a device should show right now. */
-export function matterState(core: DeviceCore): Shown[] {
+export function matterState(core: DeviceCore, multiSpeed = false): Shown[] {
   const f = core.features;
   const out: Shown[] = [];
   const light = (partId: string | undefined, part: LightPart, dimmable: boolean): void => {
@@ -56,7 +79,8 @@ export function matterState(core: DeviceCore): Shown[] {
   };
   if (f.fan) {
     const percent = fanPercent(core);
-    out.push({ cluster: 'fanControl', attributes: { fanMode: fanModeFor(percent), percentSetting: percent, percentCurrent: percent } });
+    const speed = multiSpeed ? { speedSetting: fanSpeedNumber(core), speedCurrent: fanSpeedNumber(core) } : {};
+    out.push({ cluster: 'fanControl', attributes: { fanMode: fanModeFor(percent), percentSetting: percent, percentCurrent: percent, ...speed } });
     if (f.direction) {
       out.push({ partId: 'reverse', cluster: 'onOff', attributes: { onOff: core.reversed() } });
     }
@@ -91,11 +115,12 @@ export function fanPercent(core: DeviceCore): number {
  * and turns the fan's icon into a power strip.
  */
 export function buildMatterAccessories(
-  matter: MatterApiLike, uuidFor: (extra?: string) => string, bondId: string, core: DeviceCore,
+  matter: MatterApiLike, uuidFor: (extra?: string) => string, bondId: string, core: DeviceCore, multiSpeedType?: unknown,
 ): MatterAccessoryLike[] {
   const f = core.features;
   const types = matter.deviceTypes;
-  const state = matterState(core);
+  const multi = multiSpeedType !== undefined;
+  const state = matterState(core, multi);
   const model = core.device.template || core.device.type || 'Bond device';
   const initial = (partId: string | undefined): Record<string, Attributes> => {
     const clusters: Record<string, Attributes> = {};
@@ -142,8 +167,8 @@ export function buildMatterAccessories(
 
   const main = base(undefined, core.name);
   if (f.fan) {
-    main.deviceType = types.Fan;
-    main.clusters!.fanControl = { ...main.clusters!.fanControl, fanModeSequence: 0 };
+    main.deviceType = multi ? multiSpeedType : types.Fan;
+    main.clusters!.fanControl = { ...main.clusters!.fanControl, fanModeSequence: 0, ...(multi ? { speedMax: f.maxSpeed } : {}) };
     main.handlers = {
       fanControl: {
         // Matter has no "turn fan on" command. Apple Home writes the mode, the percentage, or both.
@@ -212,14 +237,23 @@ export class MatterPublisher implements Publisher {
     /** Accessories Homebridge remembered from the last run. */
     readonly cached: Map<string, MatterAccessoryLike>,
     private readonly uuidFor: (seed: string) => string,
+    /** Experimental: declare each fan's real number of speeds to Matter. */
+    private readonly speedSteps = false,
   ) {}
 
   async publish(bondId: string, core: DeviceCore): Promise<Published> {
     const key = `${bondId}:${core.id}`;
     const uuidFor = (extra?: string): string => this.uuidFor(`bond5m5:matter:${key}${extra ? `:${extra}` : ''}`);
     const sent = new Map<string, string>();
+    const multiType = this.speedSteps && core.features.speed ? multiSpeedFan(this.matter.deviceTypes.Fan) : undefined;
+    const multi = multiType !== undefined;
+    let seenSpeed = fanSpeedNumber(core);
+    let watch: NodeJS.Timeout | undefined;
     const push = (): void => {
-      for (const s of matterState(core)) {
+      if (multi) {
+        seenSpeed = fanSpeedNumber(core);
+      }
+      for (const s of matterState(core, multi)) {
         const id = `${s.partId ?? ''}|${s.cluster}`;
         const value = JSON.stringify(s.attributes);
         if (sent.get(id) === value) {
@@ -231,7 +265,7 @@ export class MatterPublisher implements Publisher {
       }
     };
     const register = async (): Promise<void> => {
-      const accessories = buildMatterAccessories(this.matter, uuidFor, bondId, core);
+      const accessories = buildMatterAccessories(this.matter, uuidFor, bondId, core, multiType);
       // Extras that existed before but are no longer wanted (a setting was turned off, or the device changed).
       const wanted = new Set(accessories.map(a => a.UUID));
       const gone = [...this.cached.values()].filter(a =>
@@ -247,6 +281,23 @@ export class MatterPublisher implements Publisher {
       // A remembered accessory keeps its old state, so the current state is sent after registering.
       sent.clear();
       push();
+      // Homebridge tells the plugin about mode and percentage changes, but not about a change to the speed number.
+      // If Apple Home sets the speed number directly, this is the only way to notice.
+      if (multi && this.matter.getAccessoryState && !watch) {
+        watch = setInterval(() => {
+          this.matter.getAccessoryState!(uuidFor(), 'fanControl').then(state => {
+            const value = Number(state?.speedSetting);
+            if (!Number.isInteger(value) || value === seenSpeed) {
+              return;
+            }
+            seenSpeed = value;
+            if (value !== fanSpeedNumber(core)) {
+              core.wishFan(value <= 0 ? { active: false } : { speed: Math.min(value, core.features.maxSpeed) });
+            }
+          }).catch(() => undefined);
+        }, 1000);
+        watch.unref();
+      }
     };
     const unregister = async (): Promise<void> => {
       const accessories = this.byDevice.get(key) ?? [];
@@ -264,6 +315,9 @@ export class MatterPublisher implements Publisher {
         await register();
       },
       remove: async () => {
+        if (watch) {
+          clearInterval(watch);
+        }
         core.onChange = () => undefined;
         await unregister();
       },

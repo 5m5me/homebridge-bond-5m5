@@ -98,7 +98,8 @@ export class Bond5m5Platform implements DynamicPlatformPlugin {
     const hapOn = typeof maybe.isHapEnabled === 'function' ? maybe.isHapEnabled() : true;
     const connection = chooseConnection(this.config.connection, matterOn, hapOn, m => this.log.warn(m));
     const matter = matterOn
-      ? new MatterPublisher(maybe.matter!, this.logger, this.matterCache, seed => this.api.hap.uuid.generate(seed))
+      ? new MatterPublisher(maybe.matter!, this.logger, this.matterCache, seed => this.api.hap.uuid.generate(seed),
+        this.config.matterSpeedSteps !== false)
       : undefined;
     this.publisher = connection === 'matter' ? matter! : this.hap;
     const other: Publisher | undefined = connection === 'matter' ? this.hap : matter;
