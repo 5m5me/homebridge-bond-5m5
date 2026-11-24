@@ -64,18 +64,19 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 - 43 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token, a Devanti-style fan with breeze and timers, the same fan over a stand-in Matter interface, and moving devices from one connection to the other).
 - Matter was also run inside real Homebridge 2.5.0 with its real Matter server: both test fans registered with all their parts, state changes went through, and no command was sent back to the fans. The test machine has no IPv6, so a small shim was needed to start the Matter server there. The upgrade from the 1.2.0 layout to the 1.2.1 layout was run the same way on one storage folder: Homebridge re-registered the fan and added the separate tiles without error.
 - The built plugin was also started inside real Homebridge 1.11.4 and 2.5.0 processes against the simulated bridge.
+- On the real system (24 November 2026, Homebridge with Node 26, Bond BD-1000 firmware v4.40.1): the plugin connected, the Bond ID field (`bondid`) was present, three fans were reported, a fan added in the Bond app appeared without a restart, a rename in the Bond app carried through, the fans paired into Apple Home over Matter, and speed changes made in the Home app were sent to the bridge and accepted (SetSpeed 2, 3, 4 and 6 in the log).
 
 Not tested:
 
-- Commands from Apple Home to a real fan (on, off, each speed, direction, timers).
+- Whether the real fans physically respond. The bridge accepts the commands, but the fans do not report back and Ned has not confirmed it.
+- On and off, Reverse and the timers from the Home app on the real system. Only speed changes have been seen in the log.
 - Matter on the real system: 1.2.0 paired and showed the fans with speed in the Home app, and after 1.2.1 Ned reported all the fan tiles updated (24 November 2026). Apple Home picks the fan icon itself (a desk fan by default) and it is changed per tile in the Home app. Whether commands drive the real fans correctly is not confirmed yet.
-- What Apple Home does with the declared number of speeds (1.3.0). In real Homebridge 2.5.0 the feature registers without error, but nothing on the test side can show what the Home app draws.
+- Result of the speed steps experiment (1.3.0): Apple Home ignores the declared number of speeds. The slider stays smooth and still snaps to a real speed on release. The setting is still on, because Ned chose to leave things as they are.
 - Why the HomeKit pairing would not connect on Ned's server. Not investigated.
 - Up and down lights against a real device (logic tests only).
 - Breeze on real hardware. The real bridge offers a timer (SetTimer) for the Devanti fans but no breeze action, so no Breeze switch appears. The three-lines button would have to be added in the Bond app first.
 - Whether the bridge's timer needs the fan to be running first, and whether breeze turns the fan on. The plugin sends the command either way.
 - The address search on a real network.
-- The Bond ID field (`bondid`) is confirmed on the real bridge (firmware v4.40.1).
 
 ## Limits
 
