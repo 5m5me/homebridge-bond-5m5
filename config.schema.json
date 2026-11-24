@@ -1,0 +1,29 @@
+{
+  "pluginAlias": "Bond5m5",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Bond Bridge over the local network. Find the token in the Bond Home app: tap the bridge, then Settings, then look under the Bond's details.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": { "title": "Name", "type": "string", "default": "Bond (5m5)", "required": true },
+      "bridges": {
+        "title": "Bond Bridges",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": { "title": "Name (for the log)", "type": "string", "placeholder": "Bond Bridge" },
+            "host": { "title": "IP address", "type": "string", "required": true, "placeholder": "192.168.55.30", "description": "The plugin follows the bridge if this address changes later." },
+            "token": { "title": "Local token", "type": "string", "required": true },
+            "hideDeviceIds": { "title": "Device ids to hide", "type": "array", "items": { "type": "string" }, "description": "Ids are shown in the startup report in the log." }
+          }
+        }
+      },
+      "correctStateSwitch": { "title": "Add a Correct State switch to each device", "type": "boolean", "default": false, "description": "While the switch is on (30 seconds), changes in Apple Home fix what the tile shows and send nothing to the device." },
+      "dimmerSwitch": { "title": "Add a Dimmer switch for lights that only dim by holding the button", "type": "boolean", "default": true },
+      "pollSeconds": { "title": "Seconds between background state checks", "type": "integer", "default": 30, "minimum": 5, "maximum": 600 },
+      "debug": { "title": "Detailed logging", "type": "boolean", "default": false }
+    }
+  }
+}

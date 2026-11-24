@@ -1,0 +1,71 @@
+# Bond Bridge Homebridge plugin: design
+
+Date: 24 November 2026. Status: release 1 built and tested against a simulated bridge. Not yet run against the real bridge.
+
+## Goal
+
+Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infrared), fully under his control, so the bridge's devices work in Apple Home as fully as the bridge allows. Two ceiling fans now, six more planned. Infrared lights are a possible later addition.
+
+## Decisions (Ned's)
+
+- Clean build, not a fork of homebridge-bond.
+- Own package name, own GitHub repository, not on npm. Frozen release branches, as with the Gree plugin.
+- Local network only. No Bond cloud.
+
+## Packaging
+
+- Package `homebridge-bond-5m5`, display name "Bond (5m5)", platform name `Bond5m5`.
+- TypeScript, no runtime dependencies.
+- Works on Homebridge 1.8 or later and 2.x (checked on 1.11.4 and 2.5.0).
+
+## Parts
+
+| File | Job |
+|---|---|
+| `bondClient.ts` | Talks to the bridge over HTTP. Commands go one at a time with a 300 ms gap. Reads and safe commands are retried twice. Toggle, increase, decrease, cycle and start commands are never resent, because sending them twice changes the result. |
+| `bpup.ts` | Listens for the bridge's push updates on UDP 30007. Renews the subscription every 60 seconds. |
+| `capabilities.ts` | Turns the bridge's list of actions for a device into what to show in Apple Home. Nothing is tied to a fan model. Also writes the startup report. |
+| `logic.ts` | Works out which commands to send for a change in Apple Home, given what the bridge believes now. Pure logic. |
+| `deviceAccessory.ts` | The Apple Home tiles for one device. |
+| `bridge.ts` | One bridge: connect, device list, state checks, online or offline, finding the bridge again. |
+| `locator.ts` | Finds a bridge by Bond ID: the address in the settings, `<bondid>.local`, then every address on the last known /24 network. Private networks only. |
+| `store.ts` | Remembers each bridge's Bond ID and last working address in `bond-5m5-bridges.json` in the Homebridge storage folder. Written only on change. |
+| `platform.ts` | Reads the settings and starts one session per bridge. |
+
+## Behaviour
+
+- Fans (type CF): Active, speed in steps of 100 / max_speed, direction (forward = counter-clockwise in Apple Home). If the bridge does not report max_speed, 3 is assumed and the report says so.
+- Lights: one light, or separate up and down lights. A brightness slider only where the bridge has SetBrightness. Hold-to-dim remotes (StartDimmer and Stop) get a Dimmer switch that stops itself after 15 seconds.
+- Toggle-only remotes: a toggle is sent only when the tile and the bridge's belief differ.
+- Apple Home sends power and speed as separate writes. They are collected for 80 ms and sent as one plan.
+- Features switched off for a device in the Bond app (feature_light, feature_brightness, feature_up_down_light) are not shown.
+- Correct State (off by default): a switch per device. While on, for 30 seconds, changes are written to the bridge's belief (PATCH state) and no signal is sent.
+- State: push updates, plus a check every 30 seconds (setting: 5 to 600).
+- Device list is re-read every 5 minutes. New devices are added, changed ones rebuilt, deleted ones removed.
+- Bridge not answering: tiles show No Response. After 90 seconds offline the plugin searches for the bridge, at most once every 5 minutes.
+- Wrong token: one clear line in the log.
+- Device types other than CF and LT are listed in the report and not shown.
+
+## Testing
+
+- 30 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token).
+- The built plugin was also started inside real Homebridge 1.11.4 and 2.5.0 processes against the simulated bridge.
+
+Not tested:
+
+- The real Bond Bridge and real fans. The simulated bridge follows Bond's published local API, so differences in real firmware are possible.
+- Up and down lights against a real device (logic tests only).
+- The address search on a real network.
+- The Bond ID field in the bridge's version answer (`bondid`) is taken from how other integrations read it. If the real bridge omits it, the address typed in the settings is used as the identity and the address search is skipped.
+
+## Limits
+
+- Fan and light state is what the bridge believes. A wall remote can put it out of step. Correct State is the fix.
+- The address search sends about 250 small requests in a few seconds. On a router with intrusion detection this can look like a scan.
+- The token is stored in plain text in the Homebridge config, as for other plugins.
+- Timers and breeze mode have no Apple Home equivalent and are not built.
+
+## Release 2 (not built)
+
+- Per-device override in the settings: treat a Bond device as a light and map its recorded buttons to on, off, brighter, dimmer and extra switches. This is the infrared light work and needs a real remote to design against.
+- Blinds, fireplaces and generic devices.
