@@ -1,6 +1,6 @@
 # Bond Bridge Homebridge plugin: design
 
-Date: 24 November 2026. Status: version 1.2.0. Versions 1.0.0 and 1.1.0 were run against the real bridge on 24 November 2026: it connected, reported three fans, and picked up a fan added in the Bond app without a restart. Commands from Apple Home to a real fan have not been tested yet.
+Date: 24 November 2026. Status: version 1.2.1. Versions 1.0.0 and 1.1.0 were run against the real bridge on 24 November 2026: it connected, reported three fans, and picked up a fan added in the Bond app without a restart. Commands from Apple Home to a real fan have not been tested yet.
 
 ## Goal
 
@@ -40,6 +40,7 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 
 - Connection (1.2.0): the `connection` setting is Automatic, Matter or HomeKit. Automatic uses Matter when the bridge has Matter switched on, otherwise HomeKit. Devices go over one connection only. On start, anything remembered on the other connection is removed so nothing shows twice.
 - Over Matter, a fan is a Fan device (mode and percentage). Homebridge's Matter fan support has no direction control, so Reverse is a separate on/off tile, as are Breeze, the timers and Correct State. Lights are light endpoints, with brightness where the bridge can set a level.
+- Each extra is its own Matter accessory with its own name (1.2.1). In 1.2.0 they were child parts of the fan. On the real system Apple Home then showed the fan with a power strip icon and labelled every part with the fan's name, so the parts could not be told apart.
 - Matter reports the plugin's own state updates back as if they were commands. Any command that matches what the plugin already believes is ignored, so a change made in the Bond app is never sent back to the fan.
 - Fans (type CF): Active, speed in steps of 100 / max_speed, direction (forward = counter-clockwise in Apple Home). If the bridge does not report max_speed, 3 is assumed and the report says so.
 - Breeze (1.1.0): a switch per fan when the bridge offers BreezeOn and BreezeOff. Shown off whenever the fan is off.
@@ -59,14 +60,14 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 
 ## Testing
 
-- 40 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token, a Devanti-style fan with breeze and timers, the same fan over a stand-in Matter interface, and moving devices from one connection to the other).
-- Matter was also run inside real Homebridge 2.5.0 with its real Matter server: both test fans registered with all their parts, state changes went through, and no command was sent back to the fans. The test machine has no IPv6, so a small shim was needed to start the Matter server there.
+- 41 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token, a Devanti-style fan with breeze and timers, the same fan over a stand-in Matter interface, and moving devices from one connection to the other).
+- Matter was also run inside real Homebridge 2.5.0 with its real Matter server: both test fans registered with all their parts, state changes went through, and no command was sent back to the fans. The test machine has no IPv6, so a small shim was needed to start the Matter server there. The upgrade from the 1.2.0 layout to the 1.2.1 layout was run the same way on one storage folder: Homebridge re-registered the fan and added the separate tiles without error.
 - The built plugin was also started inside real Homebridge 1.11.4 and 2.5.0 processes against the simulated bridge.
 
 Not tested:
 
 - Commands from Apple Home to a real fan (on, off, each speed, direction, timers).
-- Matter with a real controller. Nothing in the tests pairs with Apple Home, so how the Home app writes fan mode and percentage, and how it shows the extra on/off tiles, is unproven until tried on the real system.
+- Matter on the real system: 1.2.0 paired and showed the fans with speed in the Home app (24 November 2026). Whether commands drive the real fans correctly, and whether Apple Home shows the 1.2.1 tile names, is not confirmed yet.
 - Why the HomeKit pairing would not connect on Ned's server. Not investigated.
 - Up and down lights against a real device (logic tests only).
 - Breeze on real hardware. The real bridge offers a timer (SetTimer) for the Devanti fans but no breeze action, so no Breeze switch appears. The three-lines button would have to be added in the Bond app first.

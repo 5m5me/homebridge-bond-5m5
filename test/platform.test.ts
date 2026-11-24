@@ -267,24 +267,19 @@ class FakeMatter implements MatterApiLike {
     for (const a of list) {
       this.accessories.set(a.UUID, a);
       for (const [cluster, attrs] of Object.entries(a.clusters ?? {})) {
-        this.state.set(`${a.UUID}||${cluster}`, { ...attrs });
-      }
-      for (const part of a.parts ?? []) {
-        for (const [cluster, attrs] of Object.entries(part.clusters)) {
-          this.state.set(`${a.UUID}|${part.id}|${cluster}`, { ...attrs });
-        }
+        this.state.set(`${a.UUID}|${cluster}`, { ...attrs });
       }
     }
   }
   async unregisterPlatformAccessories(_p: string, _n: string, list: MatterAccessoryLike[]): Promise<void> {
     list.forEach(a => { this.accessories.delete(a.UUID); this.unregistered.push(a.displayName); });
   }
-  async updateAccessoryState(uuid: string, cluster: string, attributes: Record<string, unknown>, partId?: string): Promise<void> {
-    const key = `${uuid}|${partId ?? ''}|${cluster}`;
+  async updateAccessoryState(uuid: string, cluster: string, attributes: Record<string, unknown>): Promise<void> {
+    const key = `${uuid}|${cluster}`;
     const old = this.state.get(key) ?? {};
     this.state.set(key, { ...old, ...attributes });
     const h = this.accessories.get(uuid)?.handlers?.fanControl;
-    if (cluster === 'fanControl' && !partId && h) {
+    if (cluster === 'fanControl' && h) {
       if ('fanMode' in attributes && attributes.fanMode !== old.fanMode) {
         h.fanModeChange({ fanMode: attributes.fanMode, oldFanMode: old.fanMode });
       }
@@ -293,23 +288,24 @@ class FakeMatter implements MatterApiLike {
       }
     }
   }
+  names(): string[] {
+    return [...this.accessories.values()].map(a => a.displayName);
+  }
   byName(name: string): MatterAccessoryLike {
     const a = [...this.accessories.values()].find(x => x.displayName === name);
     assert.ok(a, `Matter accessory ${name}`);
     return a;
   }
-  get(name: string, cluster: string, partId = ''): Record<string, unknown> {
-    return this.state.get(`${this.byName(name).UUID}|${partId}|${cluster}`) ?? {};
+  get(name: string, cluster: string): Record<string, unknown> {
+    return this.state.get(`${this.byName(name).UUID}|${cluster}`) ?? {};
   }
   /** Apple Home writing a fan attribute. */
   write(name: string, attrs: Record<string, unknown>): Promise<void> {
     return this.updateAccessoryState(this.byName(name).UUID, 'fanControl', attrs);
   }
-  /** Apple Home sending an on/off command to a part. */
-  async command(name: string, partId: string, on: boolean): Promise<void> {
-    const part = this.byName(name).parts!.find(p => p.id === partId)!;
-    part.handlers!.onOff[on ? 'on' : 'off']();
-    this.state.set(`${this.byName(name).UUID}|${partId}|onOff`, { onOff: on });
+  /** Apple Home sending an on/off command to a tile. */
+  async command(name: string, on: boolean): Promise<void> {
+    this.byName(name).handlers!.onOff[on ? 'on' : 'off']();
   }
 }
 
@@ -342,15 +338,18 @@ test('Matter value conversions', () => {
   }
 });
 
-test('Matter: a Devanti-style fan is a fan with reverse, breeze and timer parts, and nothing goes to HomeKit', async () => {
+test('Matter: a Devanti-style fan is a plain fan, with reverse, breeze and timers as separately named tiles', async () => {
   const fake = new FakeMatter();
   const r = await rig({}, b => { b.devices = { fan3: devantiFan() }; }, withMatter(fake));
   try {
     assert.equal(r.accessories.size, 0, 'no HomeKit accessories when Matter is used');
     const a = fake.byName('Office Fan');
     assert.equal(a.deviceType, 'Fan');
-    assert.deepEqual(a.parts!.map(p => p.id), ['reverse', 'breeze', 'timer-1', 'timer-2', 'timer-4', 'timer-8']);
-    assert.ok(a.parts!.every(p => p.deviceType === 'OnOffOutlet'));
+    assert.equal('parts' in a, false, 'the fan has no child parts, so Apple Home keeps the fan icon');
+    assert.deepEqual(fake.names(), ['Office Fan', 'Office Fan Reverse', 'Office Fan Breeze',
+      'Office Fan Off in 1h', 'Office Fan Off in 2h', 'Office Fan Off in 4h', 'Office Fan Off in 8h']);
+    assert.ok(fake.names().slice(1).every(n => fake.byName(n).deviceType === 'OnOffOutlet'));
+    assert.equal(new Set([...fake.accessories.keys()]).size, 7);
     assert.deepEqual(fake.get('Office Fan', 'fanControl'), { fanMode: 0, percentSetting: 0, percentCurrent: 0, fanModeSequence: 0 });
     assert.ok(r.logs.some(l => l.includes('published over Matter')));
   } finally {
@@ -381,14 +380,15 @@ test('Matter: speed, on and off, reverse and timers reach the fan, and our own u
     await wait(600);
     assert.deepEqual(r.bridge.log.slice(-2), ['TurnOff', 'SetSpeed 2']);
     // Reverse, a timer, then cancel it.
-    await fake.command('Office Fan', 'reverse', true);
+    await fake.command('Office Fan Reverse', true);
     await wait(500);
     assert.equal(r.bridge.log.at(-1), 'ToggleDirection');
-    await fake.command('Office Fan', 'timer-2', true);
+    await fake.command('Office Fan Off in 2h', true);
     await wait(500);
     assert.equal(r.bridge.log.at(-1), 'SetTimer 7200');
-    assert.deepEqual(fake.get('Office Fan', 'onOff', 'timer-2'), { onOff: true });
-    await fake.command('Office Fan', 'timer-2', false);
+    assert.deepEqual(fake.get('Office Fan Off in 2h', 'onOff'), { onOff: true });
+    assert.deepEqual(fake.get('Office Fan Reverse', 'onOff'), { onOff: true });
+    await fake.command('Office Fan Off in 2h', false);
     await wait(500);
     assert.equal(r.bridge.log.at(-1), 'SetTimer 0');
     const count = r.bridge.log.length;
@@ -412,13 +412,12 @@ test('Matter: lights become light endpoints with brightness', async () => {
   const fake = new FakeMatter();
   const r = await rig({}, b => { b.devices = { fan1: fullFan() }; }, withMatter(fake));
   try {
-    const a = fake.byName('Lounge Fan');
-    const light = a.parts!.find(p => p.id === 'light')!;
+    const light = fake.byName('Lounge Fan Light');
     assert.equal(light.deviceType, 'DimmableLight');
     light.handlers!.levelControl.moveToLevelWithOnOff({ level: 203 });
     await wait(900);
     assert.deepEqual(r.bridge.log, ['TurnLightOn', 'SetBrightness 80']);
-    assert.deepEqual(fake.get('Lounge Fan', 'levelControl', 'light'), { currentLevel: 203 });
+    assert.deepEqual(fake.get('Lounge Fan Light', 'levelControl'), { currentLevel: 203 });
     light.handlers!.onOff.off();
     await wait(500);
     assert.equal(r.bridge.log.at(-1), 'TurnLightOff');
@@ -456,4 +455,17 @@ test('switching connection moves the devices across instead of showing them twic
   assert.ok(logs.some(l => l.includes('Removed 1 device(s) from HomeKit')));
   assert.equal(fake.byName('Office Fan').deviceType, 'Fan');
   assert.deepEqual(fake.unregistered, ['Removed Fan'], 'a remembered Matter device that no longer exists is removed');
+  assert.equal(fake.names().length, 7);
+});
+
+test('Matter: turning the timer switches off in the settings removes those tiles and keeps the rest', async () => {
+  const fake = new FakeMatter();
+  const r = await rig({ timerSwitches: false }, b => { b.devices = { fan3: devantiFan() }; }, api => {
+    withMatter(fake)(api);
+  });
+  try {
+    assert.deepEqual(fake.names(), ['Office Fan', 'Office Fan Reverse', 'Office Fan Breeze']);
+  } finally {
+    await r.stop();
+  }
 });

@@ -7,14 +7,6 @@ import { Logger } from './types';
 type Attributes = Record<string, unknown>;
 type Handler = (args?: Record<string, unknown>) => void;
 
-export interface MatterPartLike {
-  id: string;
-  displayName: string;
-  deviceType: unknown;
-  clusters: Record<string, Attributes>;
-  handlers?: Record<string, Record<string, Handler>>;
-}
-
 export interface MatterAccessoryLike {
   UUID: string;
   displayName: string;
@@ -22,10 +14,9 @@ export interface MatterAccessoryLike {
   serialNumber?: string;
   manufacturer?: string;
   model?: string;
-  context?: { bondId?: string; deviceId?: string };
+  context?: { bondId?: string; deviceId?: string; extra?: string };
   clusters?: Record<string, Attributes>;
   handlers?: Record<string, Record<string, Handler>>;
-  parts?: MatterPartLike[];
 }
 
 /** The part of Homebridge's Matter interface this plugin uses (Homebridge 2). */
@@ -33,7 +24,7 @@ export interface MatterApiLike {
   deviceTypes: Record<string, unknown>;
   registerPlatformAccessories(plugin: string, platform: string, accessories: MatterAccessoryLike[]): Promise<void>;
   unregisterPlatformAccessories(plugin: string, platform: string, accessories: MatterAccessoryLike[]): Promise<void>;
-  updateAccessoryState(uuid: string, cluster: string, attributes: Attributes, partId?: string): Promise<void>;
+  updateAccessoryState(uuid: string, cluster: string, attributes: Attributes): Promise<void>;
 }
 
 /** Matter fan modes. The fan cluster has no on/off command, only this mode and a percentage. */
@@ -46,6 +37,7 @@ export const levelFromPercent = (percent: number): number => Math.max(1, Math.mi
 export const percentFromLevel = (level: number): number => Math.max(1, Math.min(100, Math.round((level / 254) * 100)));
 
 interface Shown {
+  /** Which tile: undefined for the device itself, otherwise the id of one of its extra tiles. */
   partId?: string;
   cluster: string;
   attributes: Attributes;
@@ -92,27 +84,44 @@ export function fanPercent(core: DeviceCore): number {
   return Math.round(core.speedPercent() ?? 100);
 }
 
-/** Builds the Matter accessory for a device: a fan (or light) with the extras as on/off parts. */
-export function buildMatterAccessory(matter: MatterApiLike, uuid: string, bondId: string, core: DeviceCore): MatterAccessoryLike {
+/**
+ * Builds the Matter accessories for a device. The first is the device itself (a fan or a light).
+ * Each extra (reverse, breeze, timers, lights on a fan, dimmer, correct state) is its own accessory with its own name.
+ * They are not child parts of the fan, because Apple Home shows every part under the parent's name
+ * and turns the fan's icon into a power strip.
+ */
+export function buildMatterAccessories(
+  matter: MatterApiLike, uuidFor: (extra?: string) => string, bondId: string, core: DeviceCore,
+): MatterAccessoryLike[] {
   const f = core.features;
   const types = matter.deviceTypes;
-  const parts: MatterPartLike[] = [];
   const state = matterState(core);
+  const model = core.device.template || core.device.type || 'Bond device';
   const initial = (partId: string | undefined): Record<string, Attributes> => {
     const clusters: Record<string, Attributes> = {};
     state.filter(s => s.partId === partId).forEach(s => { clusters[s.cluster] = { ...s.attributes }; });
     return clusters;
   };
-  const switchPart = (id: string, displayName: string, isOn: () => boolean, set: (on: boolean) => void): void => {
+  const base = (extra: string | undefined, displayName: string): MatterAccessoryLike => ({
+    UUID: uuidFor(extra),
+    displayName,
+    serialNumber: extra ? `${core.id}-${extra}` : core.id,
+    manufacturer: 'Bond',
+    model,
+    context: { bondId, deviceId: core.id, ...(extra ? { extra } : {}) },
+    clusters: initial(extra),
+  });
+  const extras: MatterAccessoryLike[] = [];
+  const switchTile = (id: string, displayName: string, isOn: () => boolean, set: (on: boolean) => void): void => {
     // The Matter library can report our own state updates back as commands. Ignore anything that changes nothing.
     const handler = (on: boolean) => (): void => {
       if (isOn() !== on) {
         set(on);
       }
     };
-    parts.push({ id, displayName, deviceType: types.OnOffOutlet, clusters: initial(id), handlers: { onOff: { on: handler(true), off: handler(false) } } });
+    extras.push({ ...base(id, displayName), deviceType: types.OnOffOutlet, handlers: { onOff: { on: handler(true), off: handler(false) } } });
   };
-  const lightEndpoint = (part: LightPart, dimmable: boolean): Pick<MatterPartLike, 'deviceType' | 'handlers'> => {
+  const lightEndpoint = (part: LightPart, dimmable: boolean): Pick<MatterAccessoryLike, 'deviceType' | 'handlers'> => {
     const toLevel: Handler = args => {
       const level = Number(args?.level);
       if (level > 0) {
@@ -131,20 +140,11 @@ export function buildMatterAccessory(matter: MatterApiLike, uuid: string, bondId
     };
   };
 
-  const accessory: MatterAccessoryLike = {
-    UUID: uuid,
-    displayName: core.name,
-    serialNumber: core.id,
-    manufacturer: 'Bond',
-    model: core.device.template || core.device.type || 'Bond device',
-    context: { bondId, deviceId: core.id },
-    clusters: initial(undefined),
-  };
-
+  const main = base(undefined, core.name);
   if (f.fan) {
-    accessory.deviceType = types.Fan;
-    accessory.clusters!.fanControl = { ...accessory.clusters!.fanControl, fanModeSequence: 0 };
-    accessory.handlers = {
+    main.deviceType = types.Fan;
+    main.clusters!.fanControl = { ...main.clusters!.fanControl, fanModeSequence: 0 };
+    main.handlers = {
       fanControl: {
         // Matter has no "turn fan on" command. Apple Home writes the mode, the percentage, or both.
         // A change that matches what we already believe is our own update coming back, so it is ignored.
@@ -173,40 +173,38 @@ export function buildMatterAccessory(matter: MatterApiLike, uuid: string, bondId
       },
     };
     if (f.direction) {
-      switchPart('reverse', `${core.name} Reverse`, () => core.reversed(), on => core.wishFan({ direction: on ? -1 : 1 }));
+      switchTile('reverse', `${core.name} Reverse`, () => core.reversed(), on => core.wishFan({ direction: on ? -1 : 1 }));
     }
     if (f.breeze) {
-      switchPart('breeze', `${core.name} Breeze`, () => core.breezeOn(), on => core.setBreeze(on));
+      switchTile('breeze', `${core.name} Breeze`, () => core.breezeOn(), on => core.setBreeze(on));
     }
     for (const hours of f.timers) {
-      switchPart(`timer-${hours}`, `${core.name} Off in ${hours}h`, () => core.timerOn(hours), on => core.setTimer(hours, on));
+      switchTile(`timer-${hours}`, `${core.name} Off in ${hours}h`, () => core.timerOn(hours), on => core.setTimer(hours, on));
     }
     for (const l of f.lights) {
-      parts.push({ id: l.part, displayName: l.name, clusters: initial(l.part), ...lightEndpoint(l.part, l.dimmable) });
+      extras.push({ ...base(l.part, l.name), ...lightEndpoint(l.part, l.dimmable) });
     }
   } else if (f.lights.length) {
     const [first, ...rest] = f.lights;
-    Object.assign(accessory, lightEndpoint(first.part, first.dimmable));
+    Object.assign(main, lightEndpoint(first.part, first.dimmable));
     for (const l of rest) {
-      parts.push({ id: l.part, displayName: l.name, clusters: initial(l.part), ...lightEndpoint(l.part, l.dimmable) });
+      extras.push({ ...base(l.part, l.name), ...lightEndpoint(l.part, l.dimmable) });
     }
   }
   if (f.dimmer) {
-    switchPart('dimmer', `${core.name} Dimmer`, () => core.dimming, on => core.setDimmer(on));
+    switchTile('dimmer', `${core.name} Dimmer`, () => core.dimming, on => core.setDimmer(on));
   }
   if (f.correct) {
-    switchPart('correct', `${core.name} Correct State`, () => core.correcting, on => core.setCorrecting(on));
+    switchTile('correct', `${core.name} Correct State`, () => core.correcting, on => core.setCorrecting(on));
   }
-  if (parts.length) {
-    accessory.parts = parts;
-  }
-  return accessory;
+  return [main, ...extras];
 }
 
 /** Publishes devices as Matter accessories through Homebridge 2's Matter bridge. */
 export class MatterPublisher implements Publisher {
   readonly label = 'Matter';
   private readonly live = new Map<string, MatterAccessoryLike>();
+  private readonly byDevice = new Map<string, MatterAccessoryLike[]>();
 
   constructor(
     private readonly matter: MatterApiLike,
@@ -217,37 +215,46 @@ export class MatterPublisher implements Publisher {
   ) {}
 
   async publish(bondId: string, core: DeviceCore): Promise<Published> {
-    const uuid = this.uuidFor(`bond5m5:matter:${bondId}:${core.id}`);
+    const key = `${bondId}:${core.id}`;
+    const uuidFor = (extra?: string): string => this.uuidFor(`bond5m5:matter:${key}${extra ? `:${extra}` : ''}`);
     const sent = new Map<string, string>();
     const push = (): void => {
       for (const s of matterState(core)) {
-        const key = `${s.partId ?? ''}|${s.cluster}`;
+        const id = `${s.partId ?? ''}|${s.cluster}`;
         const value = JSON.stringify(s.attributes);
-        if (sent.get(key) === value) {
+        if (sent.get(id) === value) {
           continue;
         }
-        sent.set(key, value);
-        this.matter.updateAccessoryState(uuid, s.cluster, s.attributes, s.partId)
+        sent.set(id, value);
+        this.matter.updateAccessoryState(uuidFor(s.partId), s.cluster, s.attributes)
           .catch(e => this.log.debug(`${core.name}: Matter state update failed: ${(e as Error).message}`));
       }
     };
     const register = async (): Promise<void> => {
-      const accessory = buildMatterAccessory(this.matter, uuid, bondId, core);
+      const accessories = buildMatterAccessories(this.matter, uuidFor, bondId, core);
+      // Extras that existed before but are no longer wanted (a setting was turned off, or the device changed).
+      const wanted = new Set(accessories.map(a => a.UUID));
+      const gone = [...this.cached.values()].filter(a =>
+        a.context?.bondId === bondId && a.context.deviceId === core.id && !wanted.has(a.UUID));
+      if (gone.length) {
+        await this.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, gone);
+        gone.forEach(a => { this.cached.delete(a.UUID); this.live.delete(a.UUID); });
+      }
       // Handlers cannot be remembered by Homebridge, so every accessory is registered on every start.
-      await this.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      this.live.set(uuid, accessory);
-      this.cached.set(uuid, accessory);
+      await this.matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, accessories);
+      accessories.forEach(a => { this.live.set(a.UUID, a); this.cached.set(a.UUID, a); });
+      this.byDevice.set(key, accessories);
       // A remembered accessory keeps its old state, so the current state is sent after registering.
       sent.clear();
       push();
     };
     const unregister = async (): Promise<void> => {
-      const accessory = this.live.get(uuid) ?? this.cached.get(uuid);
-      if (accessory) {
-        await this.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      const accessories = this.byDevice.get(key) ?? [];
+      if (accessories.length) {
+        await this.matter.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, accessories);
       }
-      this.live.delete(uuid);
-      this.cached.delete(uuid);
+      accessories.forEach(a => { this.live.delete(a.UUID); this.cached.delete(a.UUID); });
+      this.byDevice.delete(key);
     };
     core.onChange = push;
     await register();

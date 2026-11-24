@@ -4,7 +4,7 @@ Homebridge plugin for the Bond Bridge, using the bridge's local API. A clean bui
 
 Shown in Homebridge as "Bond (5m5)". Platform name: `Bond5m5`.
 
-## What it does (version 1.2.0)
+## What it does (version 1.2.1)
 
 - Works over Matter or HomeKit (Homebridge 2 for Matter). One setting chooses. Devices are never published over both, so nothing shows twice.
 - Ceiling fans: on and off, speed (the slider snaps to the fan's real speeds), direction where the remote has it.
@@ -19,7 +19,7 @@ Shown in Homebridge as "Bond (5m5)". Platform name: `Bond5m5`.
 - If the bridge's IP address changes, the plugin finds it again by its Bond ID.
 - A report in the log at start lists every device and every action the bridge offers for it.
 
-Over Matter, a fan is a fan tile (on, off, speed) with its extras as separate on/off tiles: Reverse, Breeze, the timers, Correct State. Over HomeKit, direction is part of the fan tile.
+Over Matter, a fan is a fan tile (on, off, speed). Its extras are separate accessories with their own names: Reverse, Breeze, the timers, Correct State. Over HomeKit, direction is part of the fan tile.
 
 Not in this version: blinds, fireplaces, generic devices, infrared light button mapping.
 
@@ -27,14 +27,14 @@ Not in this version: blinds, fireplaces, generic devices, infrared light button 
 
 In the Homebridge terminal, in /var/lib/homebridge:
 
-    npm install --save --omit=dev https://github.com/5m5me/homebridge-bond-5m5/archive/refs/heads/release-1.2.0.tar.gz
+    npm install --save --omit=dev https://github.com/5m5me/homebridge-bond-5m5/archive/refs/heads/release-1.2.1.tar.gz
 
 Restart Homebridge fully (a new plugin name is only recognised after a full restart). Then open the plugin settings and add the bridge's IP address and local token.
 
 ## Development
 
     npm install
-    npm test        # 40 tests, including the plugin running on real Homebridge code against a simulated bridge
+    npm test        # 41 tests, including the plugin running on real Homebridge code against a simulated bridge
     npm run build
 
 `main` holds source only. Each release has its own branch (`release-x.y.z`) with the compiled code added, and is not changed afterwards.
