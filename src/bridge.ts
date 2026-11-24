@@ -19,6 +19,8 @@ export interface BridgeOptions {
   pollSeconds: number;
   correctStateSwitch: boolean;
   dimmerSwitch: boolean;
+  breezeSwitch: boolean;
+  timerHours: number[];
   bpupPort: number;
 }
 
@@ -169,6 +171,8 @@ export class BridgeSession {
         isOnline: () => this.online,
         correctStateSwitch: this.opts.correctStateSwitch,
         dimmerSwitch: this.opts.dimmerSwitch,
+        breezeSwitch: this.opts.breezeSwitch,
+        timerHours: this.opts.timerHours,
       };
       let accessory = this.cached.get(uuid);
       if (accessory) {

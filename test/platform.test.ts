@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import type { API, PlatformAccessory } from 'homebridge';
 import { Bond5m5Platform } from '../src/platform';
-import { FakeBridge, fullFan, toggleFan } from './fakeBridge';
+import { FakeBridge, devantiFan, fullFan, toggleFan } from './fakeBridge';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { HomebridgeAPI } = require('homebridge/lib/api');
@@ -202,4 +202,55 @@ test('hidden and unsupported devices are not shown, wrong token is explained', a
   (api as unknown as { emit(e: string): void }).emit('shutdown');
   await bridge.stop();
   assert.ok(logs.some(l => l.includes('refused the token')));
+});
+
+test('Devanti-style fan: one fan tile, breeze and four timer switches, no light', async () => {
+  const r = await rig({}, b => { b.devices.fan3 = devantiFan(); });
+  try {
+    const S = r.api.hap.Service;
+    const acc = r.accessories.get('Office Fan')!;
+    assert.equal(acc.services.filter(s => s.UUID === S.Lightbulb.UUID).length, 0);
+    assert.deepEqual(acc.services.filter(s => s.UUID === S.Switch.UUID).map(s => s.subtype).sort(),
+      ['breeze', 'timer-1', 'timer-2', 'timer-4', 'timer-8']);
+    const fan = svc(r, 'Office Fan', 'Fanv2', 'fan');
+    await set(r, fan, 'Active', 1);
+    await wait(500);
+    assert.deepEqual(r.bridge.log, ['SetSpeed 3']);
+    await set(r, svc(r, 'Office Fan', 'Switch', 'timer-2'), 'On', true);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'SetTimer 7200');
+    assert.equal(val(r, svc(r, 'Office Fan', 'Switch', 'timer-2'), 'On'), true);
+    assert.equal(val(r, svc(r, 'Office Fan', 'Switch', 'timer-1'), 'On'), false);
+    // Picking a different timer replaces the first one.
+    await set(r, svc(r, 'Office Fan', 'Switch', 'timer-4'), 'On', true);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'SetTimer 14400');
+    assert.equal(val(r, svc(r, 'Office Fan', 'Switch', 'timer-2'), 'On'), false);
+    assert.equal(val(r, svc(r, 'Office Fan', 'Switch', 'timer-4'), 'On'), true);
+    await set(r, svc(r, 'Office Fan', 'Switch', 'timer-4'), 'On', false);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'SetTimer 0');
+    assert.equal(val(r, svc(r, 'Office Fan', 'Switch', 'timer-4'), 'On'), false);
+    const breeze = svc(r, 'Office Fan', 'Switch', 'breeze');
+    await set(r, breeze, 'On', true);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'BreezeOn');
+    assert.equal(val(r, breeze, 'On'), true);
+    await set(r, fan, 'Active', 0);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'TurnOff');
+    assert.equal(val(r, breeze, 'On'), false);
+  } finally {
+    await r.stop();
+  }
+});
+
+test('breeze and timer switches can be turned off in the settings', async () => {
+  const r = await rig({ breezeSwitch: false, timerSwitches: false }, b => { b.devices.fan3 = devantiFan(); });
+  try {
+    const S = r.api.hap.Service;
+    assert.equal(r.accessories.get('Office Fan')!.services.filter(s => s.UUID === S.Switch.UUID).length, 0);
+  } finally {
+    await r.stop();
+  }
 });

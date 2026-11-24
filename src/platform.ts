@@ -62,6 +62,8 @@ export class Bond5m5Platform implements DynamicPlatformPlugin {
       pollSeconds: readPollSeconds(this.config.pollSeconds),
       correctStateSwitch: this.config.correctStateSwitch === true,
       dimmerSwitch: this.config.dimmerSwitch !== false,
+      breezeSwitch: this.config.breezeSwitch !== false,
+      timerHours: this.config.timerSwitches === false ? [] : [1, 2, 4, 8],
       bpupPort: Number(this.config.bpupPort) > 0 ? Number(this.config.bpupPort) : BPUP_PORT,
     };
     for (const cfg of bridges) {

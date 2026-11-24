@@ -127,6 +127,9 @@ export class FakeBridge {
       case 'TurnLightOff': s.light = 0; break;
       case 'ToggleLight': s.light = s.light === 1 ? 0 : 1; break;
       case 'SetBrightness': s.light = 1; s.brightness = arg; break;
+      case 'BreezeOn': s.breeze = [1, 50, 50]; s.power = 1; break;
+      case 'BreezeOff': s.breeze = [0, 50, 50]; break;
+      case 'SetTimer': s.timer = arg; break;
     }
   }
 }
@@ -144,4 +147,12 @@ export const toggleFan = (): FakeDevice => ({
   actions: ['TogglePower', 'SetSpeed', 'ToggleLight', 'StartDimmer', 'Stop', 'ToggleDirection'],
   properties: { max_speed: 3 },
   state: { power: 0, speed: 1, light: 0, direction: 1 },
+});
+
+/** A fan like the Devanti remote: six speeds, stop, reverse toggle, breeze, timer, no light, no on button. */
+export const devantiFan = (): FakeDevice => ({
+  name: 'Office Fan', type: 'CF',
+  actions: ['TurnOff', 'SetSpeed', 'ToggleDirection', 'BreezeOn', 'BreezeOff', 'SetTimer'],
+  properties: { max_speed: 6 },
+  state: { power: 0, speed: 3, direction: 1, timer: 0, breeze: [0, 50, 50] },
 });

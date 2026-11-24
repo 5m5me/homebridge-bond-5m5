@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { describeDevice, mapCapabilities } from '../src/capabilities';
-import { fanPatch, lightIsOn, lightPatch, percentToSpeed, planFan, planLight, speedToPercent } from '../src/logic';
+import { activeTimerHours, breezeIsOn, fanPatch, lightIsOn, lightPatch, percentToSpeed, planFan, planLight, speedToPercent } from '../src/logic';
 import { BondDevice } from '../src/types';
-import { fullFan, toggleFan } from './fakeBridge';
+import { devantiFan, fullFan, toggleFan } from './fakeBridge';
 
 const dev = (d: ReturnType<typeof fullFan>): BondDevice => ({ id: 'abc', ...d });
 const names = (a: Array<{ name: string; argument?: number }>): string[] => a.map(x => (x.argument === undefined ? x.name : `${x.name} ${x.argument}`));
@@ -24,9 +24,9 @@ test('speed and percent convert both ways for every speed', () => {
 test('full fan capabilities', () => {
   const caps = mapCapabilities(dev(fullFan()));
   assert.equal(caps.kind, 'fan');
-  assert.deepEqual(caps.fan, { power: 'direct', speed: true, maxSpeed: 6, maxSpeedAssumed: false, direction: 'set' });
+  assert.deepEqual(caps.fan, { power: 'direct', speed: true, maxSpeed: 6, maxSpeedAssumed: false, direction: 'set', breeze: false, timer: true });
   assert.deepEqual(caps.light, { kind: 'single', power: 'direct', brightness: true, upDownBrightness: false, dimmer: false });
-  assert.deepEqual(caps.unused, ['TogglePower', 'IncreaseSpeed', 'DecreaseSpeed', 'ToggleDirection', 'ToggleLight', 'SetTimer']);
+  assert.deepEqual(caps.unused, ['TogglePower', 'IncreaseSpeed', 'DecreaseSpeed', 'ToggleDirection', 'ToggleLight']);
 });
 
 test('toggle-only fan capabilities, hold-to-dim light', () => {
@@ -130,4 +130,36 @@ test('up and down light plans and state', () => {
   assert.deepEqual(names(planLight('down', { on: false }, { light: 1, down_light: 1 }, caps)), ['TurnDownLightOff']);
   assert.deepEqual(lightPatch('up', { on: true }, caps), { up_light: 1, light: 1 });
   assert.deepEqual(lightPatch('light', { on: false }, caps), { light: 0 });
+});
+
+test('fan with no on button and no light: a speed turns it on, stop turns it off', () => {
+  const d = dev(devantiFan());
+  const caps = mapCapabilities(d);
+  assert.equal(caps.light, undefined);
+  assert.deepEqual(caps.fan, { power: 'offOnly', speed: true, maxSpeed: 6, maxSpeedAssumed: false, direction: 'toggle', breeze: true, timer: true });
+  assert.deepEqual(caps.unused, []);
+  const f = caps.fan!;
+  assert.deepEqual(names(planFan({ active: true }, { power: 0, speed: 3 }, f)), ['SetSpeed 3']);
+  assert.deepEqual(names(planFan({ active: true }, { power: 0 }, f)), ['SetSpeed 1']);
+  assert.deepEqual(names(planFan({ active: true, speed: 5 }, { power: 0, speed: 3 }, f)), ['SetSpeed 5']);
+  assert.deepEqual(names(planFan({ active: true, speed: 3 }, { power: 0, speed: 3 }, f)), ['SetSpeed 3']);
+  assert.deepEqual(names(planFan({ active: true, speed: 3 }, { power: 1, speed: 3 }, f)), []);
+  assert.deepEqual(names(planFan({ active: false }, { power: 1, speed: 3 }, f)), ['TurnOff']);
+  assert.deepEqual(names(planFan({ direction: -1 }, { power: 1, direction: 1 }, f)), ['ToggleDirection']);
+  assert.ok(describeDevice(d, caps).some(l => l.includes('Breeze mode: available')));
+  assert.ok(describeDevice(d, caps).some(l => l.includes('Light: none')));
+});
+
+test('breeze state and which timer switch shows as on', () => {
+  assert.equal(breezeIsOn({ breeze: [1, 50, 50] }), true);
+  assert.equal(breezeIsOn({ breeze: [0, 50, 50] }), false);
+  assert.equal(breezeIsOn({}), false);
+  const opts = [1, 2, 4, 8];
+  assert.equal(activeTimerHours({ power: 1, timer: 0 }, 2, opts), undefined);
+  assert.equal(activeTimerHours({ power: 0, timer: 500 }, 2, opts), undefined);
+  assert.equal(activeTimerHours({ power: 1, timer: 7000 }, 2, opts), 2);
+  assert.equal(activeTimerHours({ power: 1, timer: 100 }, 8, opts), 8);
+  assert.equal(activeTimerHours({ power: 1, timer: 7000 }, undefined, opts), 2);
+  assert.equal(activeTimerHours({ power: 1, timer: 3601 }, 1, opts), 2);
+  assert.equal(activeTimerHours({ power: 1, timer: 99999 }, undefined, opts), 8);
 });

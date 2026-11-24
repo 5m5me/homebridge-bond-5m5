@@ -1,7 +1,7 @@
 import type { API, CharacteristicValue, PlatformAccessory, Service, WithUUID } from 'homebridge';
 import { DeviceCaps, mapCapabilities } from './capabilities';
 import {
-  FanWish, LightPart, LightWish, fanPatch, lightIsOn, lightLevel, lightPatch,
+  FanWish, LightPart, LightWish, activeTimerHours, breezeIsOn, fanPatch, lightIsOn, lightLevel, lightPatch,
   percentToSpeed, planFan, planLight, speedToPercent,
 } from './logic';
 import { BondAction, BondDevice, BondState, Logger } from './types';
@@ -14,6 +14,8 @@ export interface AccessoryDeps {
   isOnline(): boolean;
   correctStateSwitch: boolean;
   dimmerSwitch: boolean;
+  breezeSwitch: boolean;
+  timerHours: number[];
 }
 
 const SETTLE_MS = 80;
@@ -32,6 +34,7 @@ export class BondDeviceAccessory {
   private correctTimer?: NodeJS.Timeout;
   private dimmerTimer?: NodeJS.Timeout;
   private correcting = false;
+  private lastTimerHours?: number;
 
   constructor(readonly accessory: PlatformAccessory, device: BondDevice, private readonly deps: AccessoryDeps) {
     this.configure(device);
@@ -90,6 +93,20 @@ export class BondDeviceAccessory {
           .onSet(v => this.wishFan({ direction: v === C.RotationDirection.COUNTER_CLOCKWISE ? 1 : -1 }));
       } else if (svc.testCharacteristic(C.RotationDirection)) {
         svc.removeCharacteristic(svc.getCharacteristic(C.RotationDirection));
+      }
+      if (fan.breeze && this.deps.breezeSwitch) {
+        const sw = use(S.Switch, `${device.name} Breeze`, 'breeze');
+        sw.getCharacteristic(C.On).onSet(v => this.simple(
+          { name: v === true ? 'BreezeOn' : 'BreezeOff' }, v === true ? { breeze: [1], power: 1 } : { breeze: [0] }));
+      }
+      if (fan.timer) {
+        for (const hours of this.deps.timerHours) {
+          const sw = use(S.Switch, `${device.name} Off in ${hours}h`, `timer-${hours}`);
+          sw.getCharacteristic(C.On).onSet(v => {
+            this.lastTimerHours = v === true ? hours : undefined;
+            this.simple({ name: 'SetTimer', argument: v === true ? hours * 3600 : 0 }, { timer: v === true ? hours * 3600 : 0 });
+          });
+        }
       }
     }
 
@@ -174,6 +191,13 @@ export class BondDeviceAccessory {
           Number(this.state.direction) === -1 ? C.RotationDirection.CLOCKWISE : C.RotationDirection.COUNTER_CLOCKWISE);
       }
     }
+    if (this.caps.fan) {
+      acc.getServiceById(S.Switch, 'breeze')?.updateCharacteristic(C.On, this.fanOn() && breezeIsOn(this.state));
+      const active = activeTimerHours(this.state, this.lastTimerHours, this.deps.timerHours);
+      for (const hours of this.deps.timerHours) {
+        acc.getServiceById(S.Switch, `timer-${hours}`)?.updateCharacteristic(C.On, active === hours);
+      }
+    }
     for (const part of ['light', 'up', 'down'] as LightPart[]) {
       const svc = acc.getServiceById(S.Lightbulb, part);
       if (!svc) {
@@ -240,6 +264,17 @@ export class BondDeviceAccessory {
       this.deps.log.error(`${name}: command failed: ${(e as Error).message}`);
     }
     this.publish();
+  }
+
+  /** One command with no planning needed. Always sent, also while Correct State is on. */
+  private simple(action: BondAction, expected: BondState): void {
+    this.deps.send(this.device.id, action)
+      .then(() => {
+        this.deps.log.info(`${this.device.name}: sent ${action.name}${action.argument === undefined ? '' : ` ${action.argument}`}`);
+        this.state = { ...this.state, ...expected };
+      })
+      .catch(e => this.deps.log.error(`${this.device.name}: ${action.name} failed: ${(e as Error).message}`))
+      .finally(() => this.publish());
   }
 
   private setCorrecting(on: boolean, svc: Service): void {

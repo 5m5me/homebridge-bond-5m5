@@ -29,7 +29,7 @@ export function planFan(wish: FanWish, state: BondState, caps: FanCaps): BondAct
   const on = isOn(state.power);
   const wantOff = wish.active === false || wish.speed === 0;
   if (wantOff) {
-    if (caps.power === 'direct') {
+    if (caps.power === 'direct' || caps.power === 'offOnly') {
       out.push({ name: 'TurnOff' });
     } else if (caps.power === 'toggle' && on) {
       out.push({ name: 'TogglePower' });
@@ -49,6 +49,10 @@ export function planFan(wish: FanWish, state: BondState, caps: FanCaps): BondAct
       out.push({ name: 'TurnOn' });
     } else if (caps.power === 'toggle') {
       out.push({ name: 'TogglePower' });
+    } else if (caps.speed) {
+      // No on button on this remote. Pressing a speed is what turns the fan on.
+      const last = Number(state.speed);
+      out.push({ name: 'SetSpeed', argument: last >= 1 && last <= caps.maxSpeed ? last : 1 });
     }
   }
   if (wish.direction !== undefined && Number(state.direction) !== wish.direction) {
@@ -150,4 +154,25 @@ export function lightPatch(part: LightPart, wish: LightWish, caps: LightCaps): B
     patch[p.level] = wish.brightness;
   }
   return patch;
+}
+
+export function breezeIsOn(state: BondState): boolean {
+  const b = state.breeze;
+  return Array.isArray(b) ? Number(b[0]) === 1 : b === 1 || b === true;
+}
+
+/**
+ * Which timer switch to show as on. The bridge only reports seconds remaining,
+ * so the switch last pressed wins. After a restart, the smallest option that still covers the time left is used.
+ */
+export function activeTimerHours(state: BondState, lastSetHours: number | undefined, options: number[]): number | undefined {
+  const left = Number(state.timer);
+  if (!(left > 0) || !isOn(state.power)) {
+    return undefined;
+  }
+  if (lastSetHours !== undefined && options.includes(lastSetHours) && left <= lastSetHours * 3600) {
+    return lastSetHours;
+  }
+  const sorted = [...options].sort((a, b) => a - b);
+  return sorted.find(h => left <= h * 3600) ?? sorted[sorted.length - 1];
 }

@@ -4,9 +4,12 @@ Homebridge plugin for the Bond Bridge, using the bridge's local API. A clean bui
 
 Shown in Homebridge as "Bond (5m5)". Platform name: `Bond5m5`.
 
-## What it does (version 1.0.0)
+## What it does (version 1.1.0)
 
 - Ceiling fans: on and off, speed (the slider snaps to the fan's real speeds), direction where the remote has it.
+- Breeze (natural wind) switch on fans whose remote has it.
+- Sleep timer switches on fans that have a timer: Off in 1h, 2h, 4h, 8h. Turning one on replaces any other. Turning it off cancels the timer.
+- Remotes with no on button: a speed turns the fan on (the last speed used, or speed 1).
 - Fan lights and stand-alone lights: on and off, brightness where the bridge can set a level, separate up and down lights.
 - Lights that only dim by holding the button get a "Dimmer" switch: on starts dimming, off stops it. It stops by itself after 15 seconds.
 - Optional "Correct State" switch per device: for 30 seconds, changes in Apple Home fix what the tile shows and send nothing to the device.
@@ -15,20 +18,20 @@ Shown in Homebridge as "Bond (5m5)". Platform name: `Bond5m5`.
 - If the bridge's IP address changes, the plugin finds it again by its Bond ID.
 - A report in the log at start lists every device and every action the bridge offers for it.
 
-Not in this version: blinds, fireplaces, generic devices, infrared light button mapping, timers, breeze mode.
+Not in this version: blinds, fireplaces, generic devices, infrared light button mapping.
 
 ## Install
 
 In the Homebridge terminal, in /var/lib/homebridge:
 
-    npm install --save --omit=dev https://github.com/5m5me/homebridge-bond-5m5/archive/refs/heads/release-1.0.0.tar.gz
+    npm install --save --omit=dev https://github.com/5m5me/homebridge-bond-5m5/archive/refs/heads/release-1.1.0.tar.gz
 
 Restart Homebridge fully (a new plugin name is only recognised after a full restart). Then open the plugin settings and add the bridge's IP address and local token.
 
 ## Development
 
     npm install
-    npm test        # 30 tests, including the plugin running on real Homebridge code against a simulated bridge
+    npm test        # 34 tests, including the plugin running on real Homebridge code against a simulated bridge
     npm run build
 
 `main` holds source only. Each release has its own branch (`release-x.y.z`) with the compiled code added, and is not changed afterwards.

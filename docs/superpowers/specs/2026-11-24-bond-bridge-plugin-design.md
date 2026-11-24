@@ -1,16 +1,17 @@
 # Bond Bridge Homebridge plugin: design
 
-Date: 24 November 2026. Status: release 1 built and tested against a simulated bridge. Not yet run against the real bridge.
+Date: 24 November 2026. Status: version 1.1.0 built and tested against a simulated bridge. Not yet run against the real bridge.
 
 ## Goal
 
-Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infrared), fully under his control, so the bridge's devices work in Apple Home as fully as the bridge allows. Two ceiling fans now, six more planned. Infrared lights are a possible later addition.
+Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infrared), fully under his control, so the bridge's devices work in Apple Home as fully as the bridge allows. Two ceiling fans now, six more planned. The fans are Devanti: six speeds, stop, reverse, timers (1H, 2H, 4H, 8H) and a three-lines button. No lights on any of them. Infrared lights are a possible later addition.
 
 ## Decisions (Ned's)
 
 - Clean build, not a fork of homebridge-bond.
 - Own package name, own GitHub repository, not on npm. Frozen release branches, as with the Gree plugin.
 - Local network only. No Bond cloud.
+- Breeze and the four sleep timers are built in as switches (Ned's decision, 24 November 2026).
 
 ## Packaging
 
@@ -35,6 +36,10 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 ## Behaviour
 
 - Fans (type CF): Active, speed in steps of 100 / max_speed, direction (forward = counter-clockwise in Apple Home). If the bridge does not report max_speed, 3 is assumed and the report says so.
+- Breeze (1.1.0): a switch per fan when the bridge offers BreezeOn and BreezeOff. Shown off whenever the fan is off.
+- Sleep timers (1.1.0): four switches per fan (Off in 1h, 2h, 4h, 8h) when the bridge offers SetTimer. On sends the time in seconds, off sends 0. Only one shows as on. The bridge reports only the time left, so after a Homebridge restart the smallest option that covers the time left is shown.
+- Remotes with an off button but no on button (1.1.0): a speed command turns the fan on, using the last speed or speed 1.
+- Both sets of switches can be turned off in the settings.
 - Lights: one light, or separate up and down lights. A brightness slider only where the bridge has SetBrightness. Hold-to-dim remotes (StartDimmer and Stop) get a Dimmer switch that stops itself after 15 seconds.
 - Toggle-only remotes: a toggle is sent only when the tile and the bridge's belief differ.
 - Apple Home sends power and speed as separate writes. They are collected for 80 ms and sent as one plan.
@@ -48,13 +53,15 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 
 ## Testing
 
-- 30 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token).
+- 34 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token, a Devanti-style fan with breeze and timers).
 - The built plugin was also started inside real Homebridge 1.11.4 and 2.5.0 processes against the simulated bridge.
 
 Not tested:
 
 - The real Bond Bridge and real fans. The simulated bridge follows Bond's published local API, so differences in real firmware are possible.
 - Up and down lights against a real device (logic tests only).
+- Whether the Bond app recorded the Devanti remote's three-lines button as breeze and its hour buttons as a timer. If the bridge does not list BreezeOn, BreezeOff or SetTimer for a fan, those switches do not appear and the startup report says so.
+- Whether the bridge's timer needs the fan to be running first, and whether breeze turns the fan on. The plugin sends the command either way.
 - The address search on a real network.
 - The Bond ID field in the bridge's version answer (`bondid`) is taken from how other integrations read it. If the real bridge omits it, the address typed in the settings is used as the identity and the address search is skipped.
 
@@ -63,7 +70,8 @@ Not tested:
 - Fan and light state is what the bridge believes. A wall remote can put it out of step. Correct State is the fix.
 - The address search sends about 250 small requests in a few seconds. On a router with intrusion detection this can look like a scan.
 - The token is stored in plain text in the Homebridge config, as for other plugins.
-- Timers and breeze mode have no Apple Home equivalent and are not built.
+- Timers and breeze have no Apple Home equivalent, so they are plain switches. With all eight fans that is up to 40 extra switches.
+- Breeze and timer switches always send their command, also while Correct State is on.
 
 ## Release 2 (not built)
 

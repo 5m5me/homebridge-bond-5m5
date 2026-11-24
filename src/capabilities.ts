@@ -1,6 +1,6 @@
 import { BondDevice } from './types';
 
-export type PowerMode = 'direct' | 'toggle' | 'none';
+export type PowerMode = 'direct' | 'toggle' | 'offOnly' | 'none';
 
 export interface FanCaps {
   power: PowerMode;
@@ -8,6 +8,8 @@ export interface FanCaps {
   maxSpeed: number;
   maxSpeedAssumed: boolean;
   direction: 'set' | 'toggle' | 'none';
+  breeze: boolean;
+  timer: boolean;
 }
 
 export interface LightCaps {
@@ -32,7 +34,10 @@ function powerMode(has: (a: string) => boolean, on: string, off: string, toggle:
   if (has(on) && has(off)) {
     return 'direct';
   }
-  return has(toggle) ? 'toggle' : 'none';
+  if (has(toggle)) {
+    return 'toggle';
+  }
+  return has(off) ? 'offOnly' : 'none';
 }
 
 export function mapCapabilities(dev: BondDevice): DeviceCaps {
@@ -58,6 +63,8 @@ export function mapCapabilities(dev: BondDevice): DeviceCaps {
       maxSpeed: maxKnown ? rawMax : DEFAULT_MAX_SPEED,
       maxSpeedAssumed: speed && !maxKnown,
       direction: has('SetDirection') ? 'set' : has('ToggleDirection') ? 'toggle' : 'none',
+      breeze: has('BreezeOn') && has('BreezeOff'),
+      timer: has('SetTimer'),
     };
   } else if (dev.type === 'LT') {
     caps.kind = 'light';
@@ -102,11 +109,14 @@ export function describeDevice(dev: BondDevice, caps: DeviceCaps): string[] {
   }
   if (caps.fan) {
     const f = caps.fan;
-    lines.push(`  Fan power: ${f.power === 'direct' ? 'separate on and off' : f.power === 'toggle' ? 'toggle only' : 'none'}`);
+    const power = { direct: 'separate on and off', toggle: 'toggle only', offOnly: 'off button only (a speed turns it on)', none: 'no power button (a speed turns it on)' };
+    lines.push(`  Fan power: ${power[f.power]}`);
     lines.push(f.speed
       ? `  Fan speeds: ${f.maxSpeed}${f.maxSpeedAssumed ? ' (assumed, the bridge did not report max_speed)' : ''}`
       : '  Fan speeds: not settable (on and off only)');
     lines.push(`  Direction: ${f.direction === 'none' ? 'not available' : f.direction === 'set' ? 'available' : 'available (toggle only)'}`);
+    lines.push(`  Breeze mode: ${f.breeze ? 'available' : 'not offered by the bridge for this device'}`);
+    lines.push(`  Sleep timer: ${f.timer ? 'available' : 'not offered by the bridge for this device'}`);
   }
   if (caps.light) {
     const l = caps.light;

@@ -1,7 +1,7 @@
 {
   "name": "homebridge-bond-5m5",
   "displayName": "Bond (5m5)",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Homebridge plugin for the Bond Bridge over its local API. Custom build, not published to npm.",
   "license": "MIT",
   "private": true,

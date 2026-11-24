@@ -22,6 +22,8 @@
       },
       "correctStateSwitch": { "title": "Add a Correct State switch to each device", "type": "boolean", "default": false, "description": "While the switch is on (30 seconds), changes in Apple Home fix what the tile shows and send nothing to the device." },
       "dimmerSwitch": { "title": "Add a Dimmer switch for lights that only dim by holding the button", "type": "boolean", "default": true },
+      "breezeSwitch": { "title": "Add a Breeze switch to fans that have a breeze (natural wind) mode", "type": "boolean", "default": true },
+      "timerSwitches": { "title": "Add sleep timer switches (Off in 1h, 2h, 4h, 8h) to fans that have a timer", "type": "boolean", "default": true },
       "pollSeconds": { "title": "Seconds between background state checks", "type": "integer", "default": 30, "minimum": 5, "maximum": 600 },
       "debug": { "title": "Detailed logging", "type": "boolean", "default": false }
     }
