@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { API, PlatformAccessory } from 'homebridge';
-import { Bond5m5Platform } from '../src/platform';
+import { MatterAccessoryLike, MatterApiLike, fanModeFor, levelFromPercent, percentFromLevel } from '../src/matterPublisher';
+import { Bond5m5Platform, chooseConnection } from '../src/platform';
 import { FakeBridge, devantiFan, fullFan, toggleFan } from './fakeBridge';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -25,13 +26,14 @@ interface Rig {
   stop(): Promise<void>;
 }
 
-async function rig(extra: Record<string, unknown> = {}, setup?: (b: FakeBridge) => void): Promise<Rig> {
+async function rig(extra: Record<string, unknown> = {}, setup?: (b: FakeBridge) => void, prepare?: (api: API) => void): Promise<Rig> {
   const bridge = new FakeBridge();
   bridge.devices.fan1 = fullFan();
   bridge.devices.fan2 = toggleFan();
   setup?.(bridge);
   await bridge.start();
   const api = new HomebridgeAPI() as API;
+  prepare?.(api);
   const accessories = new Map<string, PlatformAccessory>();
   api.on('registerPlatformAccessories' as never, ((list: PlatformAccessory[]) => list.forEach(a => accessories.set(a.displayName, a))) as never);
   api.on('unregisterPlatformAccessories' as never, ((list: PlatformAccessory[]) => list.forEach(a => accessories.delete(a.displayName))) as never);
@@ -253,4 +255,205 @@ test('breeze and timer switches can be turned off in the settings', async () => 
   } finally {
     await r.stop();
   }
+});
+
+/** Stand-in for Homebridge 2's Matter interface. Like the real one, it reports fan state changes back as commands. */
+class FakeMatter implements MatterApiLike {
+  deviceTypes = { Fan: 'Fan', OnOffOutlet: 'OnOffOutlet', OnOffLight: 'OnOffLight', DimmableLight: 'DimmableLight' };
+  accessories = new Map<string, MatterAccessoryLike>();
+  state = new Map<string, Record<string, unknown>>();
+  unregistered: string[] = [];
+  async registerPlatformAccessories(_p: string, _n: string, list: MatterAccessoryLike[]): Promise<void> {
+    for (const a of list) {
+      this.accessories.set(a.UUID, a);
+      for (const [cluster, attrs] of Object.entries(a.clusters ?? {})) {
+        this.state.set(`${a.UUID}||${cluster}`, { ...attrs });
+      }
+      for (const part of a.parts ?? []) {
+        for (const [cluster, attrs] of Object.entries(part.clusters)) {
+          this.state.set(`${a.UUID}|${part.id}|${cluster}`, { ...attrs });
+        }
+      }
+    }
+  }
+  async unregisterPlatformAccessories(_p: string, _n: string, list: MatterAccessoryLike[]): Promise<void> {
+    list.forEach(a => { this.accessories.delete(a.UUID); this.unregistered.push(a.displayName); });
+  }
+  async updateAccessoryState(uuid: string, cluster: string, attributes: Record<string, unknown>, partId?: string): Promise<void> {
+    const key = `${uuid}|${partId ?? ''}|${cluster}`;
+    const old = this.state.get(key) ?? {};
+    this.state.set(key, { ...old, ...attributes });
+    const h = this.accessories.get(uuid)?.handlers?.fanControl;
+    if (cluster === 'fanControl' && !partId && h) {
+      if ('fanMode' in attributes && attributes.fanMode !== old.fanMode) {
+        h.fanModeChange({ fanMode: attributes.fanMode, oldFanMode: old.fanMode });
+      }
+      if ('percentSetting' in attributes && attributes.percentSetting !== old.percentSetting) {
+        h.percentSettingChange({ percentSetting: attributes.percentSetting, oldPercentSetting: old.percentSetting });
+      }
+    }
+  }
+  byName(name: string): MatterAccessoryLike {
+    const a = [...this.accessories.values()].find(x => x.displayName === name);
+    assert.ok(a, `Matter accessory ${name}`);
+    return a;
+  }
+  get(name: string, cluster: string, partId = ''): Record<string, unknown> {
+    return this.state.get(`${this.byName(name).UUID}|${partId}|${cluster}`) ?? {};
+  }
+  /** Apple Home writing a fan attribute. */
+  write(name: string, attrs: Record<string, unknown>): Promise<void> {
+    return this.updateAccessoryState(this.byName(name).UUID, 'fanControl', attrs);
+  }
+  /** Apple Home sending an on/off command to a part. */
+  async command(name: string, partId: string, on: boolean): Promise<void> {
+    const part = this.byName(name).parts!.find(p => p.id === partId)!;
+    part.handlers!.onOff[on ? 'on' : 'off']();
+    this.state.set(`${this.byName(name).UUID}|${partId}|onOff`, { onOff: on });
+  }
+}
+
+const withMatter = (fake: FakeMatter, hapOn = true) => (api: API): void => {
+  Object.assign(api, { matter: fake, isMatterEnabled: () => true, isHapEnabled: () => hapOn });
+};
+
+test('connection choice: Matter when the bridge has it, HomeKit otherwise, never both', () => {
+  const warns: string[] = [];
+  const w = (m: string): void => { warns.push(m); };
+  assert.equal(chooseConnection(undefined, true, true, w), 'matter');
+  assert.equal(chooseConnection('auto', false, true, w), 'homekit');
+  assert.equal(chooseConnection('homekit', true, true, w), 'homekit');
+  assert.equal(chooseConnection('matter', true, false, w), 'matter');
+  assert.equal(warns.length, 0);
+  assert.equal(chooseConnection('matter', false, true, w), 'homekit');
+  assert.equal(chooseConnection('homekit', true, false, w), 'matter');
+  assert.equal(warns.length, 2);
+  assert.equal(chooseConnection('homekit', false, false, w), 'homekit');
+});
+
+test('Matter value conversions', () => {
+  assert.deepEqual([0, 17, 33, 50, 67, 100].map(fanModeFor), [0, 1, 1, 2, 3, 3]);
+  assert.equal(levelFromPercent(100), 254);
+  assert.equal(levelFromPercent(1), 3);
+  assert.equal(percentFromLevel(254), 100);
+  assert.equal(percentFromLevel(1), 1);
+  for (const p of [1, 25, 50, 75, 100]) {
+    assert.equal(percentFromLevel(levelFromPercent(p)), p);
+  }
+});
+
+test('Matter: a Devanti-style fan is a fan with reverse, breeze and timer parts, and nothing goes to HomeKit', async () => {
+  const fake = new FakeMatter();
+  const r = await rig({}, b => { b.devices = { fan3: devantiFan() }; }, withMatter(fake));
+  try {
+    assert.equal(r.accessories.size, 0, 'no HomeKit accessories when Matter is used');
+    const a = fake.byName('Office Fan');
+    assert.equal(a.deviceType, 'Fan');
+    assert.deepEqual(a.parts!.map(p => p.id), ['reverse', 'breeze', 'timer-1', 'timer-2', 'timer-4', 'timer-8']);
+    assert.ok(a.parts!.every(p => p.deviceType === 'OnOffOutlet'));
+    assert.deepEqual(fake.get('Office Fan', 'fanControl'), { fanMode: 0, percentSetting: 0, percentCurrent: 0, fanModeSequence: 0 });
+    assert.ok(r.logs.some(l => l.includes('published over Matter')));
+  } finally {
+    await r.stop();
+  }
+});
+
+test('Matter: speed, on and off, reverse and timers reach the fan, and our own updates are not sent back as commands', async () => {
+  const fake = new FakeMatter();
+  const r = await rig({}, b => { b.devices = { fan3: devantiFan() }; }, withMatter(fake));
+  try {
+    // Apple Home sets 67 percent on a six speed fan: speed 4.
+    await fake.write('Office Fan', { percentSetting: 67 });
+    await wait(600);
+    assert.deepEqual(r.bridge.log, ['SetSpeed 4']);
+    assert.deepEqual(fake.get('Office Fan', 'fanControl'), { fanMode: 3, percentSetting: 67, percentCurrent: 67, fanModeSequence: 0 });
+    // 40 percent is not a real step. The fan gets speed 2 and the slider snaps to 33.
+    await fake.write('Office Fan', { percentSetting: 40 });
+    await wait(600);
+    assert.deepEqual(r.bridge.log, ['SetSpeed 4', 'SetSpeed 2']);
+    assert.equal(fake.get('Office Fan', 'fanControl').percentSetting, 33);
+    // Off by mode, then on again by mode: the last speed is used.
+    await fake.write('Office Fan', { fanMode: 0 });
+    await wait(600);
+    assert.equal(r.bridge.log.at(-1), 'TurnOff');
+    assert.equal(fake.get('Office Fan', 'fanControl').percentSetting, 0);
+    await fake.write('Office Fan', { fanMode: 3 });
+    await wait(600);
+    assert.deepEqual(r.bridge.log.slice(-2), ['TurnOff', 'SetSpeed 2']);
+    // Reverse, a timer, then cancel it.
+    await fake.command('Office Fan', 'reverse', true);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'ToggleDirection');
+    await fake.command('Office Fan', 'timer-2', true);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'SetTimer 7200');
+    assert.deepEqual(fake.get('Office Fan', 'onOff', 'timer-2'), { onOff: true });
+    await fake.command('Office Fan', 'timer-2', false);
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'SetTimer 0');
+    const count = r.bridge.log.length;
+
+    // The Bond app changes the fan. Matter follows, and nothing is sent back to the fan.
+    r.bridge.devices.fan3.state.speed = 6;
+    r.bridge.pushState('fan3');
+    await wait(300);
+    assert.equal(fake.get('Office Fan', 'fanControl').percentSetting, 100);
+    r.bridge.devices.fan3.state.power = 0;
+    r.bridge.pushState('fan3');
+    await wait(300);
+    assert.equal(fake.get('Office Fan', 'fanControl').fanMode, 0);
+    assert.equal(r.bridge.log.length, count, 'state coming from the bridge never becomes a command');
+  } finally {
+    await r.stop();
+  }
+});
+
+test('Matter: lights become light endpoints with brightness', async () => {
+  const fake = new FakeMatter();
+  const r = await rig({}, b => { b.devices = { fan1: fullFan() }; }, withMatter(fake));
+  try {
+    const a = fake.byName('Lounge Fan');
+    const light = a.parts!.find(p => p.id === 'light')!;
+    assert.equal(light.deviceType, 'DimmableLight');
+    light.handlers!.levelControl.moveToLevelWithOnOff({ level: 203 });
+    await wait(900);
+    assert.deepEqual(r.bridge.log, ['TurnLightOn', 'SetBrightness 80']);
+    assert.deepEqual(fake.get('Lounge Fan', 'levelControl', 'light'), { currentLevel: 203 });
+    light.handlers!.onOff.off();
+    await wait(500);
+    assert.equal(r.bridge.log.at(-1), 'TurnLightOff');
+  } finally {
+    await r.stop();
+  }
+});
+
+test('switching connection moves the devices across instead of showing them twice', async () => {
+  // First run on HomeKit, with the HomeKit accessories remembered for the next run.
+  const first = await rig({}, b => { b.devices = { fan3: devantiFan() }; });
+  const remembered = [...first.accessories.values()];
+  assert.equal(remembered.length, 1);
+  await first.stop();
+
+  const fake = new FakeMatter();
+  const bridge = new FakeBridge();
+  bridge.devices = { fan3: devantiFan() };
+  await bridge.start();
+  const api = new HomebridgeAPI() as API;
+  withMatter(fake)(api);
+  const gone: string[] = [];
+  api.on('unregisterPlatformAccessories' as never, ((list: PlatformAccessory[]) => list.forEach(a => gone.push(a.displayName))) as never);
+  const logs: string[] = [];
+  const logFn = (m: string): void => { logs.push(m); };
+  const log = Object.assign(logFn, { info: logFn, warn: logFn, error: logFn, debug: () => undefined });
+  const platform = new Bond5m5Platform(log as never, { platform: 'Bond5m5', bridges: [{ host: bridge.host, token: bridge.token }], bpupPort: bridge.udpPort } as never, api);
+  remembered.forEach(a => platform.configureAccessory(a));
+  platform.configureMatterAccessory({ UUID: 'old-matter', displayName: 'Removed Fan', context: { bondId: 'ZZTEST12345', deviceId: 'gone' } });
+  (api as unknown as { emit(e: string): void }).emit('didFinishLaunching');
+  await wait(600);
+  (api as unknown as { emit(e: string): void }).emit('shutdown');
+  await bridge.stop();
+  assert.deepEqual(gone, ['Office Fan'], 'the HomeKit copy is removed');
+  assert.ok(logs.some(l => l.includes('Removed 1 device(s) from HomeKit')));
+  assert.equal(fake.byName('Office Fan').deviceType, 'Fan');
+  assert.deepEqual(fake.unregistered, ['Removed Fan'], 'a remembered Matter device that no longer exists is removed');
 });

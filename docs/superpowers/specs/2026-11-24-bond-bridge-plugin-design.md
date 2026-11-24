@@ -1,6 +1,6 @@
 # Bond Bridge Homebridge plugin: design
 
-Date: 24 November 2026. Status: version 1.1.0 built and tested against a simulated bridge. Not yet run against the real bridge.
+Date: 24 November 2026. Status: version 1.2.0. Versions 1.0.0 and 1.1.0 were run against the real bridge on 24 November 2026: it connected, reported three fans, and picked up a fan added in the Bond app without a restart. Commands from Apple Home to a real fan have not been tested yet.
 
 ## Goal
 
@@ -12,6 +12,7 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 - Own package name, own GitHub repository, not on npm. Frozen release branches, as with the Gree plugin.
 - Local network only. No Bond cloud.
 - Breeze and the four sleep timers are built in as switches (Ned's decision, 24 November 2026).
+- Matter support added so either connection can be chosen (Ned's decision, 24 November 2026). On his server the HomeKit pairing would not connect and the Matter pairing did.
 
 ## Packaging
 
@@ -27,7 +28,9 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 | `bpup.ts` | Listens for the bridge's push updates on UDP 30007. Renews the subscription every 60 seconds. |
 | `capabilities.ts` | Turns the bridge's list of actions for a device into what to show in Apple Home. Nothing is tied to a fan model. Also writes the startup report. |
 | `logic.ts` | Works out which commands to send for a change in Apple Home, given what the bridge believes now. Pure logic. |
-| `deviceAccessory.ts` | The Apple Home tiles for one device. |
+| `deviceCore.ts` | One device: what it can do, what the bridge believes, and how to command it. Knows nothing about HomeKit or Matter. |
+| `hapPublisher.ts` | Shows devices over HomeKit. |
+| `matterPublisher.ts` | Shows devices over Matter, through Homebridge 2's Matter bridge. |
 | `bridge.ts` | One bridge: connect, device list, state checks, online or offline, finding the bridge again. |
 | `locator.ts` | Finds a bridge by Bond ID: the address in the settings, `<bondid>.local`, then every address on the last known /24 network. Private networks only. |
 | `store.ts` | Remembers each bridge's Bond ID and last working address in `bond-5m5-bridges.json` in the Homebridge storage folder. Written only on change. |
@@ -35,6 +38,9 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 
 ## Behaviour
 
+- Connection (1.2.0): the `connection` setting is Automatic, Matter or HomeKit. Automatic uses Matter when the bridge has Matter switched on, otherwise HomeKit. Devices go over one connection only. On start, anything remembered on the other connection is removed so nothing shows twice.
+- Over Matter, a fan is a Fan device (mode and percentage). Homebridge's Matter fan support has no direction control, so Reverse is a separate on/off tile, as are Breeze, the timers and Correct State. Lights are light endpoints, with brightness where the bridge can set a level.
+- Matter reports the plugin's own state updates back as if they were commands. Any command that matches what the plugin already believes is ignored, so a change made in the Bond app is never sent back to the fan.
 - Fans (type CF): Active, speed in steps of 100 / max_speed, direction (forward = counter-clockwise in Apple Home). If the bridge does not report max_speed, 3 is assumed and the report says so.
 - Breeze (1.1.0): a switch per fan when the bridge offers BreezeOn and BreezeOff. Shown off whenever the fan is off.
 - Sleep timers (1.1.0): four switches per fan (Off in 1h, 2h, 4h, 8h) when the bridge offers SetTimer. On sends the time in seconds, off sends 0. Only one shows as on. The bridge reports only the time left, so after a Homebridge restart the smallest option that covers the time left is shown.
@@ -53,17 +59,20 @@ Ned's own Homebridge plugin for his Bond Bridge (standard model, radio and infra
 
 ## Testing
 
-- 34 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token, a Devanti-style fan with breeze and timers).
+- 40 automated tests. They cover the mapping and command logic, the HTTP client, push parsing and a live push, the address search, the store, the settings, and the whole plugin running on real Homebridge code against a simulated bridge (tiles created, commands sent, push followed, Correct State, No Response, hidden and unsupported devices, wrong token, a Devanti-style fan with breeze and timers, the same fan over a stand-in Matter interface, and moving devices from one connection to the other).
+- Matter was also run inside real Homebridge 2.5.0 with its real Matter server: both test fans registered with all their parts, state changes went through, and no command was sent back to the fans. The test machine has no IPv6, so a small shim was needed to start the Matter server there.
 - The built plugin was also started inside real Homebridge 1.11.4 and 2.5.0 processes against the simulated bridge.
 
 Not tested:
 
-- The real Bond Bridge and real fans. The simulated bridge follows Bond's published local API, so differences in real firmware are possible.
+- Commands from Apple Home to a real fan (on, off, each speed, direction, timers).
+- Matter with a real controller. Nothing in the tests pairs with Apple Home, so how the Home app writes fan mode and percentage, and how it shows the extra on/off tiles, is unproven until tried on the real system.
+- Why the HomeKit pairing would not connect on Ned's server. Not investigated.
 - Up and down lights against a real device (logic tests only).
-- Whether the Bond app recorded the Devanti remote's three-lines button as breeze and its hour buttons as a timer. If the bridge does not list BreezeOn, BreezeOff or SetTimer for a fan, those switches do not appear and the startup report says so.
+- Breeze on real hardware. The real bridge offers a timer (SetTimer) for the Devanti fans but no breeze action, so no Breeze switch appears. The three-lines button would have to be added in the Bond app first.
 - Whether the bridge's timer needs the fan to be running first, and whether breeze turns the fan on. The plugin sends the command either way.
 - The address search on a real network.
-- The Bond ID field in the bridge's version answer (`bondid`) is taken from how other integrations read it. If the real bridge omits it, the address typed in the settings is used as the identity and the address search is skipped.
+- The Bond ID field (`bondid`) is confirmed on the real bridge (firmware v4.40.1).
 
 ## Limits
 
@@ -71,6 +80,8 @@ Not tested:
 - The address search sends about 250 small requests in a few seconds. On a router with intrusion detection this can look like a scan.
 - The token is stored in plain text in the Homebridge config, as for other plugins.
 - Timers and breeze have no Apple Home equivalent, so they are plain switches. With all eight fans that is up to 40 extra switches.
+- Over Matter the extra tiles are outlets as far as Apple Home is concerned. Each can be shown as a switch or fan in the Home app's settings for that tile.
+- Over Matter, a tile does not show No Response when the Bond Bridge is unreachable. The log says so instead.
 - Breeze and timer switches always send their command, also while Correct State is on.
 
 ## Release 2 (not built)

@@ -1,10 +1,9 @@
-import type { API, PlatformAccessory } from 'homebridge';
 import { BondClient, BondHttpError } from './bondClient';
 import { PushListener } from './bpup';
 import { describeDevice, mapCapabilities } from './capabilities';
-import { BondDeviceAccessory } from './deviceAccessory';
+import { CoreOptions, DeviceCore } from './deviceCore';
 import { locateBridge } from './locator';
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
+import { Published, Publisher } from './publisher';
 import { BridgeStore } from './store';
 import { Logger } from './types';
 
@@ -15,13 +14,14 @@ export interface BridgeConfig {
   hideDeviceIds: string[];
 }
 
-export interface BridgeOptions {
+export interface BridgeOptions extends CoreOptions {
   pollSeconds: number;
-  correctStateSwitch: boolean;
-  dimmerSwitch: boolean;
-  breezeSwitch: boolean;
-  timerHours: number[];
   bpupPort: number;
+}
+
+interface Entry {
+  core: DeviceCore;
+  published: Published;
 }
 
 const DEVICE_REFRESH_MS = 5 * 60 * 1000;
@@ -33,7 +33,7 @@ export class BridgeSession {
   readonly client: BondClient;
   bondId?: string;
   private push?: PushListener;
-  private readonly devices = new Map<string, BondDeviceAccessory>();
+  private readonly devices = new Map<string, Entry>();
   private readonly hashes = new Map<string, string>();
   private online = false;
   private offlineSince = 0;
@@ -44,12 +44,11 @@ export class BridgeSession {
   private stopped = false;
 
   constructor(
-    private readonly api: API,
     private readonly log: Logger,
     private readonly cfg: BridgeConfig,
     private readonly opts: BridgeOptions,
     private readonly store: BridgeStore,
-    private readonly cached: Map<string, PlatformAccessory>,
+    private readonly publisher: Publisher,
     private readonly onIdentified: () => void,
   ) {
     const remembered = store.get(cfg.host);
@@ -67,7 +66,7 @@ export class BridgeSession {
       clearTimeout(this.timer);
     }
     this.push?.stop();
-    this.devices.forEach(d => d.stop());
+    this.devices.forEach(d => d.core.stop());
   }
 
   private schedule(): void {
@@ -126,26 +125,23 @@ export class BridgeSession {
     this.log.info(`${this.cfg.name}: connected to Bond ${id} at ${this.client.host}`
       + ` (firmware ${String(version.fw_ver ?? 'unknown')}, model ${String(version.model ?? version.target ?? 'unknown')})`);
     this.push = new PushListener(this.client.host, this.opts.bpupPort, {
-      onState: (deviceId, state) => this.devices.get(deviceId)?.updateState(state),
+      onState: (deviceId, state) => this.devices.get(deviceId)?.core.updateState(state),
     });
     this.push.start();
     this.onIdentified();
-  }
-
-  private uuid(deviceId: string): string {
-    return this.api.hap.uuid.generate(`bond5m5:${this.bondId}:${deviceId}`);
   }
 
   private async refreshDevices(): Promise<void> {
     const index = await this.client.deviceIndex();
     const wanted = Object.keys(index.devices).filter(id => !this.cfg.hideDeviceIds.includes(id));
     const report: string[] = [];
+    const bondId = this.bondId!;
 
     for (const id of wanted) {
       const hash = index.devices[id];
       const existing = this.devices.get(id);
       if (existing && this.hashes.get(id) === hash) {
-        existing.updateState(await this.client.state(id));
+        existing.core.updateState(await this.client.state(id));
         continue;
       }
       const device = await this.client.device(id, hash);
@@ -153,86 +149,73 @@ export class BridgeSession {
       report.push(...describeDevice(device, caps));
       this.hashes.set(id, hash);
       if (caps.kind === 'unsupported') {
-        this.remove(id);
+        await this.remove(id);
         continue;
       }
       if (existing) {
-        existing.configure(device);
-        this.api.updatePlatformAccessories([existing.accessory]);
+        existing.core.setDevice(device);
+        await existing.published.reconfigure();
         this.log.info(`${this.cfg.name}: "${device.name}" changed in the Bond app, updated.`);
         continue;
       }
-      const uuid = this.uuid(id);
-      const deps = {
-        api: this.api,
+      const core = new DeviceCore(device, {
         log: this.log,
         send: this.client.action.bind(this.client),
         patch: this.client.patchState.bind(this.client),
         isOnline: () => this.online,
-        correctStateSwitch: this.opts.correctStateSwitch,
-        dimmerSwitch: this.opts.dimmerSwitch,
-        breezeSwitch: this.opts.breezeSwitch,
-        timerHours: this.opts.timerHours,
-      };
-      let accessory = this.cached.get(uuid);
-      if (accessory) {
-        accessory.context = { bondId: this.bondId, deviceId: id };
-        this.devices.set(id, new BondDeviceAccessory(accessory, device, deps));
-        this.api.updatePlatformAccessories([accessory]);
-      } else {
-        accessory = new this.api.platformAccessory(device.name, uuid);
-        accessory.context = { bondId: this.bondId, deviceId: id };
-        this.devices.set(id, new BondDeviceAccessory(accessory, device, deps));
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        this.cached.set(uuid, accessory);
-        if (this.reported) {
-          this.log.info(`${this.cfg.name}: new device "${device.name}" added to Apple Home.`);
-        }
+        options: this.opts,
+      });
+      let published: Published;
+      try {
+        published = await this.publisher.publish(bondId, core);
+      } catch (e) {
+        this.log.error(`${this.cfg.name}: could not publish "${device.name}" over ${this.publisher.label}: ${(e as Error).message}`);
+        this.hashes.delete(id); // try again on the next device refresh
+        continue;
+      }
+      this.devices.set(id, { core, published });
+      if (this.reported) {
+        this.log.info(`${this.cfg.name}: new device "${device.name}" published over ${this.publisher.label}.`);
       }
     }
 
     // Devices deleted from the Bond app, or now hidden in the config.
     for (const id of [...this.devices.keys()]) {
       if (!wanted.includes(id)) {
-        this.remove(id);
+        await this.remove(id);
       }
     }
-    for (const [uuid, accessory] of [...this.cached]) {
-      const ctx = accessory.context as { bondId?: string; deviceId?: string };
-      if (ctx.bondId === this.bondId && ctx.deviceId && !this.devices.has(ctx.deviceId)) {
-        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        this.cached.delete(uuid);
-      }
-    }
+    await this.publisher.removeStale(bondId, [...this.devices.keys()]);
 
     if (report.length) {
       this.log.info(`${this.cfg.name}: device report${this.reported ? ' (changes)' : ''}:`);
       report.forEach(line => this.log.info(line));
     }
-    if (!this.reported && wanted.length === 0) {
-      this.log.info(`${this.cfg.name}: the bridge has no devices to show yet.`);
+    if (!this.reported) {
+      this.log.info(wanted.length
+        ? `${this.cfg.name}: ${this.devices.size} device(s) published over ${this.publisher.label}.`
+        : `${this.cfg.name}: the bridge has no devices to show yet.`);
     }
     this.reported = true;
     this.lastDeviceRefreshAt = Date.now();
   }
 
-  private remove(id: string): void {
-    const dev = this.devices.get(id);
-    if (!dev) {
+  private async remove(id: string): Promise<void> {
+    const entry = this.devices.get(id);
+    if (!entry) {
       return;
     }
-    dev.stop();
+    entry.core.stop();
     this.devices.delete(id);
     this.hashes.delete(id);
-    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [dev.accessory]);
-    this.cached.delete(dev.accessory.UUID);
-    this.log.info(`${this.cfg.name}: "${dev.accessory.displayName}" removed from Apple Home.`);
+    await entry.published.remove();
+    this.log.info(`${this.cfg.name}: "${entry.core.name}" removed.`);
   }
 
   private async pollStates(): Promise<void> {
     for (const [id, dev] of this.devices) {
       try {
-        dev.updateState(await this.client.state(id));
+        dev.core.updateState(await this.client.state(id));
       } catch (e) {
         if (e instanceof BondHttpError && e.status === 404) {
           this.lastDeviceRefreshAt = 0; // the device is gone. Rebuild the list on the next round.
@@ -260,7 +243,7 @@ export class BridgeSession {
       this.offlineSince = Date.now();
       this.log.warn(`${this.cfg.name}: the bridge is not answering at ${this.client.host}.`);
     }
-    this.devices.forEach(d => d.refresh());
+    this.devices.forEach(d => d.core.onChange());
   }
 
   private async searchIfLost(): Promise<void> {
