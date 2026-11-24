@@ -1,6 +1,6 @@
 # Bond Bridge Homebridge plugin: design
 
-Date: 24 November 2026. Status: version 1.3.0. Versions 1.0.0 and 1.1.0 were run against the real bridge on 24 November 2026: it connected, reported three fans, and picked up a fan added in the Bond app without a restart. Commands from Apple Home to a real fan have not been tested yet.
+Date: 24 November 2026. Status: version 1.3.0, installed and running on Ned's Homebridge, publishing three fans over Matter. What is installed is recorded in `claude/bond-bridge-homekit-setup.md`. The Testing section below lists what was confirmed on the real system and what was not.
 
 ## Goal
 
@@ -70,7 +70,7 @@ Not tested:
 
 - Whether the real fans physically respond. The bridge accepts the commands, but the fans do not report back and Ned has not confirmed it.
 - On and off, Reverse and the timers from the Home app on the real system. Only speed changes have been seen in the log.
-- Matter on the real system: 1.2.0 paired and showed the fans with speed in the Home app, and after 1.2.1 Ned reported all the fan tiles updated (24 November 2026). Apple Home picks the fan icon itself (a desk fan by default) and it is changed per tile in the Home app. Whether commands drive the real fans correctly is not confirmed yet.
+- Whether the Reverse and timer tiles show their proper names in the Home app. Apple Home picks the fan icon itself (a desk fan by default) and it is changed per tile in the Home app.
 - Result of the speed steps experiment (1.3.0): Apple Home ignores the declared number of speeds. The slider stays smooth and still snaps to a real speed on release. The setting is still on, because Ned chose to leave things as they are.
 - Why the HomeKit pairing would not connect on Ned's server. Not investigated.
 - Up and down lights against a real device (logic tests only).
